@@ -200,7 +200,7 @@ export interface ProofBundle {
 
 // ── Independent verification ───────────────────────────────────────────────
 
-export type VerifyVerdict = "VERIFIED" | "TAMPERED" | "UNSUPPORTED_CLAIM" | "SOURCE_MISMATCH";
+export type VerifyVerdict = "VERIFIED" | "LEGACY_UNVERIFIED" | "TAMPERED" | "UNSUPPORTED_CLAIM" | "SOURCE_MISMATCH";
 
 export interface VerifyCheck {
   name: string;

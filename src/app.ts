@@ -341,7 +341,7 @@ specific fact each scene is bound to → story ships with a signed proof bundle
 - MCP (Streamable HTTP): POST ${BASE_URL}/mcp
   Tools: create_story, analyze_csv, verify_story, get_story, list_themes, get_pricing
 - REST: POST ${BASE_URL}/api/story  {"csv": "...", "question": "...", "tone": "documentary|boardroom|punchy", "theme": "midnight|paper|neon"}
-- Verify: POST ${BASE_URL}/api/verify  {"csv": "...", "storyId": "..."} → VERIFIED | TAMPERED | UNSUPPORTED_CLAIM | SOURCE_MISMATCH
+- Verify: POST ${BASE_URL}/api/verify  {"csv": "...", "storyId": "..."} → VERIFIED | TAMPERED | UNSUPPORTED_CLAIM | SOURCE_MISMATCH | LEGACY_UNVERIFIED
 - Story page: GET ${BASE_URL}/story/{id}   · spec: GET ${BASE_URL}/story/{id}.json
 - Proof key: GET ${BASE_URL}/api/proof-key · Health: GET ${BASE_URL}/api/health · Pricing: GET ${BASE_URL}/x402/info
 

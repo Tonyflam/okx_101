@@ -413,9 +413,13 @@ async function aiNarrative(
     stat: heroStat(sceneFacts),
   });
 
+  // Numeric metric columns known to the ledger — AI prose for one scene must
+  // not name a different scene's metric.
+  const allColumns = numericMetricColumns(allFacts);
+
   sceneFacts.forEach((f, i) => {
     const d = draft.scenes[i]!;
-    const claim = auditClaimText(f, `${d.headline} ${d.body}`, audit);
+    const claim = auditClaimText(f, `${d.headline} ${d.body}`, audit, forbiddenMetricsFor(f, allColumns));
     const ok = claim.ok;
     const detScene = det.scenes[i + 1] as InsightScene; // same order, offset by hero
     scenes.push({
@@ -588,6 +592,41 @@ export interface ClaimAudit {
   reason?: string;
 }
 
+/** Case-insensitive whole-word mention of a column name in prose. */
+export function metricMentioned(text: string, name: string): boolean {
+  const trimmed = name.trim();
+  if (trimmed.length < 2) return false;
+  const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\w])${escaped}(?![\\w])`, "i").test(text);
+}
+
+/** Dataset metrics a scene bound to fact `f` must NOT name (everything not measured by `f`). */
+export function forbiddenMetricsFor(f: Fact, allColumns: readonly string[]): string[] {
+  const bound = new Set(f.columns.map((c) => c.toLowerCase()));
+  return allColumns.filter((c) => !bound.has(c.toLowerCase()));
+}
+
+/** Numeric measure columns referenced anywhere in the fact ledger (no dataset needed). */
+export function numericMetricColumns(facts: readonly Fact[]): string[] {
+  const out = new Set<string>();
+  for (const f of facts) {
+    switch (f.kind) {
+      case "correlation":
+        for (const c of f.columns) out.add(c);
+        break;
+      case "category_leader":
+      case "concentration":
+        if (f.columns[1]) out.add(f.columns[1]); // [categorical, numeric]
+        break;
+      case "overview":
+        break; // carries every column, including non-metrics
+      default:
+        if (f.columns[0]) out.add(f.columns[0]);
+    }
+  }
+  return [...out];
+}
+
 // ── Structured claims ────────────────────────────────────────────────────────
 
 const OPERATION_BY_KIND: Record<FactKind, { operation: string; unit: string }> = {
@@ -651,15 +690,33 @@ export function claimDiff(stored: SceneClaim, fresh: SceneClaim): string | null 
  * Audit prose against the ONE fact it claims to describe:
  * 1. every number must come from that fact (plus tiny structural ints/years);
  * 2. the direction language must not contradict the fact's computed direction;
- * 3. correlation sign words must match the computed r.
+ * 3. correlation sign words must match the computed r;
+ * 4. no other dataset metric may be named — prose cannot swap "revenue" for
+ *    "costs" while keeping the numbers and the structured claim intact.
  * Used at generation time (AI scenes) and at verification time (verify_story).
  */
-export function auditClaimText(f: Fact, text: string, audit?: NumericAudit): ClaimAudit {
+export function auditClaimText(
+  f: Fact,
+  text: string,
+  audit?: NumericAudit,
+  forbiddenMetrics?: readonly string[],
+): ClaimAudit {
   const counters: NumericAudit = audit ?? { checked: 0, verified: 0, rewritten: 0 };
   const allowed = new Set([...factAllowedNumbers(f), ...smallStructural()]);
   const numbersOk = auditText(text, allowed, counters);
   if (!numbersOk) {
     return { ok: false, reason: `contains a number not present in fact ${f.id} (${f.kind})` };
+  }
+  if (forbiddenMetrics) {
+    for (const name of forbiddenMetrics) {
+      if (metricMentioned(text, name)) {
+        if (audit) audit.semanticRejected = (audit.semanticRejected ?? 0) + 1;
+        return {
+          ok: false,
+          reason: `mentions metric "${name}" but the bound fact ${f.id} measures "${f.columns.join('", "')}"`,
+        };
+      }
+    }
   }
   const dir = factDirection(f);
   if (dir === "up" && DOWN_WORDS.test(text) && !UP_WORDS.test(text)) {

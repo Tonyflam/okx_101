@@ -122,7 +122,7 @@ function renderLedger(spec: StorySpec): string {
     ? `<div class="proof">
     <h4>Cryptographic proof</h4>
     <p>This story is signed. Dataset SHA-256 <code>${escapeHtml(spec.proof.csvSha256.slice(0, 20))}…</code> · ledger <code>${escapeHtml(spec.proof.factsSha256.slice(0, 20))}…</code> · story <code>${escapeHtml(spec.proof.storySha256.slice(0, 20))}…</code> · Ed25519 by <code>${escapeHtml(spec.proof.engine)}</code>.</p>
-    <p>Any agent can re-verify: <code>POST /api/verify {"csv": …, "storyId": "${escapeHtml(spec.id)}"}</code> recomputes every fact and audits every claim → VERIFIED / TAMPERED / UNSUPPORTED_CLAIM / SOURCE_MISMATCH.</p>
+    <p>Any agent can re-verify: <code>POST /api/verify {"csv": …, "storyId": "${escapeHtml(spec.id)}"}</code> recomputes every fact and audits every claim → VERIFIED / TAMPERED / UNSUPPORTED_CLAIM / SOURCE_MISMATCH / LEGACY_UNVERIFIED.</p>
   </div>`
     : "";
   return `<section class="ledger">

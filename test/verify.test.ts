@@ -167,6 +167,44 @@ test("adversarial: forged claim.operation/unit → UNSUPPORTED_CLAIM", async () 
   assert.equal(report.verdict, "UNSUPPORTED_CLAIM");
 });
 
+test("adversarial: prose metric substitution (revenue→costs) → UNSUPPORTED_CLAIM", async () => {
+  const spec = await makeStory();
+  const scene = spec.scenes.find(
+    (s): s is InsightScene => s.kind === "insight" && s.claim?.metric === "revenue",
+  );
+  assert.ok(scene, "needs a revenue scene");
+  // The lie keeps every number AND the valid structured claim — only the
+  // metric name in prose changes.
+  scene.headline = scene.headline.replace(/revenue/gi, "costs");
+  scene.body = scene.body.replace(/revenue/gi, "costs");
+  delete spec.proof;
+  const report = verifyStory(CSV, spec, ENGINE, TRUSTED);
+  assert.equal(report.verdict, "UNSUPPORTED_CLAIM");
+  const claims = report.checks.find((c) => c.name === "claims-supported");
+  assert.ok(claims && !claims.ok && /mentions metric "costs"/i.test(claims.detail));
+});
+
+// ── Downgrade paths: stripping protections can never yield VERIFIED ────────
+
+test("stripped proof → LEGACY_UNVERIFIED, never VERIFIED", async () => {
+  const spec = await makeStory();
+  delete spec.proof;
+  const report = verifyStory(CSV, spec, ENGINE, TRUSTED);
+  assert.equal(report.verdict, "LEGACY_UNVERIFIED");
+  const sig = report.checks.find((c) => c.name === "proof-signature");
+  assert.ok(sig && !sig.ok && /LEGACY_UNVERIFIED/.test(sig.detail));
+});
+
+test("stripped structured claims → LEGACY_UNVERIFIED, never VERIFIED", async () => {
+  const spec = await makeStory();
+  delete spec.proof;
+  for (const s of spec.scenes) if (s.kind === "insight") delete s.claim;
+  const report = verifyStory(CSV, spec, ENGINE, TRUSTED);
+  assert.equal(report.verdict, "LEGACY_UNVERIFIED");
+  const present = report.checks.find((c) => c.name === "claims-present");
+  assert.ok(present && !present.ok && /lack structured claims/.test(present.detail));
+});
+
 test("adversarial: invented percentage → UNSUPPORTED_CLAIM", async () => {
   const spec = await makeStory();
   const scene = spec.scenes.find((s): s is InsightScene => s.kind === "insight");

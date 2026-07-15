@@ -31,8 +31,10 @@ Trust model (why agents can rely on the output):
 3. Every story embeds a signed proof bundle: SHA-256 of the dataset, the fact ledger
    and the story spec, signed with the server's Ed25519 key — verifiable offline.
 4. verify_story re-runs the ENTIRE analysis from the raw CSV and returns
-   VERIFIED / TAMPERED / UNSUPPORTED_CLAIM / SOURCE_MISMATCH — so any agent can
-   independently audit any Plotline story (or catch a forged one).
+   VERIFIED / TAMPERED / UNSUPPORTED_CLAIM / SOURCE_MISMATCH / LEGACY_UNVERIFIED —
+   so any agent can independently audit any Plotline story (or catch a forged one).
+   VERIFIED requires a proof signed by a pinned trusted key AND structured claims
+   on every insight scene; anything missing those protections can never be VERIFIED.
 
 Typical flow: call create_story with raw CSV text. You get a shareable URL to a
 self-contained scrollytelling page plus metadata. Use analyze_csv for facts-only JSON,
@@ -229,14 +231,14 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "Independently verify a story against its source data",
       description:
-        "Re-run Plotline's entire deterministic analysis on the original CSV and audit an existing story against it. Checks the signed proof bundle (SHA-256 + Ed25519), recomputes every fact, and validates every scene claim (numbers AND direction) against its bound fact. Returns VERIFIED, TAMPERED (facts/spec altered), UNSUPPORTED_CLAIM (prose not backed by facts), or SOURCE_MISMATCH (wrong dataset). Pass a story_id for a story on this server, or spec_json for any Plotline story spec — including one downloaded from elsewhere.",
+        "Re-run Plotline's entire deterministic analysis on the original CSV and audit an existing story against it. Checks the signed proof bundle (SHA-256 + Ed25519, pinned trusted keys only), recomputes every fact, and validates every scene claim — structured fields (metric, unit, period, category, operation, direction) field-by-field plus prose (numbers, direction words, metric names). Returns VERIFIED, TAMPERED (facts/spec altered or untrusted signing key), UNSUPPORTED_CLAIM (prose or claim fields not backed by facts), SOURCE_MISMATCH (wrong dataset), or LEGACY_UNVERIFIED (missing proof/claims — never VERIFIED without them). Pass a story_id for a story on this server, or spec_json for any Plotline story spec — including one downloaded from elsewhere.",
       inputSchema: {
         csv: z.string().min(1).describe("The original raw CSV the story claims to be built from."),
         story_id: z.string().min(4).max(24).optional().describe("ID of a story on this server."),
         spec_json: z.string().optional().describe("Alternatively: a full StorySpec JSON (e.g. the downloaded /story/{id}.json)."),
       },
       outputSchema: {
-        verdict: z.enum(["VERIFIED", "TAMPERED", "UNSUPPORTED_CLAIM", "SOURCE_MISMATCH"]),
+        verdict: z.enum(["VERIFIED", "LEGACY_UNVERIFIED", "TAMPERED", "UNSUPPORTED_CLAIM", "SOURCE_MISMATCH"]),
         storyId: z.string(),
         factsChecked: z.number(),
         claimsChecked: z.number(),
@@ -264,7 +266,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         }
         const trusted = deps.signer ? trustedKeysFromEnv(deps.signer.publicKey) : [];
         const report = verifyStory(args.csv, spec, `plotline@${deps.version}`, trusted);
-        const icon = report.verdict === "VERIFIED" ? "✅" : "❌";
+        const icon = report.verdict === "VERIFIED" ? "✅" : report.verdict === "LEGACY_UNVERIFIED" ? "⚠️" : "❌";
         const text = [
           `${icon} **${report.verdict}** — story \`${report.storyId}\``,
           ``,
