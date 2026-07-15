@@ -24,7 +24,7 @@ How it works:
 Output: one self-contained HTML page (no CDNs, no trackers) with animated charts that draw themselves, a count-up hero stat, three visual themes (midnight/paper/neon) and three tones (documentary/boardroom/punchy).
 
 MCP tools: create_story, analyze_csv, get_story, list_themes, get_pricing.
-Free daily quota per client; pay-per-story via x402 (USDT0 on X Layer) beyond it.
+Free to call (HTTP 200 with result directly); optional paid mode charges per story via x402 (USDT0 on X Layer).
 
 Use cases: agents turning sales/metrics/onchain/sensor/personal data into shareable reports, weekly business reviews, community updates, research summaries — anywhere an agent must present numbers to a human without hallucinating them.
 ```
@@ -41,8 +41,9 @@ https://<YOUR-DEPLOYMENT>/mcp
 
 ## Pricing
 ```
-Free tier: 25 calls/day per client (HTTP 200 with result directly).
-Paid: $0.20 USDT0 per story via x402 on X Layer (eip155:196) when quota exhausted.
+Free type: HTTP 200 with the result directly; 25 stories/day per client (429 over quota).
+Paid type (optional deploy): every unpaid call returns HTTP 402 + PAYMENT-REQUIRED
+header with an x402 v2 challenge — $0.20 USDT0 per story on X Layer (eip155:196).
 ```
 
 ## Tool list (if asked)

@@ -81,74 +81,101 @@ export function clientKey(req: Request): string {
   return raw || "unknown";
 }
 
-export interface PaymentRequirements {
+export interface PaymentAccept {
   scheme: "exact";
   network: string;
-  maxAmountRequired: string;
-  resource: string;
-  description: string;
-  mimeType: string;
+  asset: string;
+  amount: string;
   payTo: string;
   maxTimeoutSeconds: number;
-  asset: string;
   extra: { name: string; version: string };
 }
 
-export function buildRequirements(cfg: X402Config, resourcePath: string): PaymentRequirements {
+export interface X402Challenge {
+  x402Version: 2;
+  resource: { url: string; description: string; mimeType: string };
+  accepts: PaymentAccept[];
+}
+
+/**
+ * Build the standard x402 v2 challenge exactly as specified in the OKX A2MCP
+ * guide: top-level `resource` object, `accepts[]` entries with `amount` in
+ * minimal units (USDT0, decimals=6), network `eip155:196` (X Layer).
+ * Base64 of this JSON goes in the PAYMENT-REQUIRED response header — that
+ * header is what the marketplace validates — and the JSON is mirrored in the
+ * body (which carries `x402Version`).
+ */
+export function buildChallenge(cfg: X402Config, resourcePath: string): X402Challenge {
   const atomic = Math.round(cfg.priceUsd * 1e6); // USDT0 has 6 decimals
   return {
-    scheme: "exact",
-    network: XLAYER_NETWORK,
-    maxAmountRequired: String(atomic),
-    resource: `${cfg.baseUrl}${resourcePath}`,
-    description: "Plotline: turn a CSV into a verified, cinematic data story.",
-    mimeType: "application/json",
-    payTo: cfg.payTo,
-    maxTimeoutSeconds: 120,
-    asset: USDT0_ADDRESS,
-    extra: { name: "USDT0", version: "1" },
+    x402Version: 2,
+    resource: {
+      url: `${cfg.baseUrl}${resourcePath}`,
+      description: "Plotline: turn a CSV into a verified, cinematic data story.",
+      mimeType: "application/json",
+    },
+    accepts: [
+      {
+        scheme: "exact",
+        network: XLAYER_NETWORK,
+        asset: USDT0_ADDRESS,
+        amount: String(atomic),
+        payTo: cfg.payTo,
+        maxTimeoutSeconds: 300,
+        extra: { name: "USD\u20AE0", version: "1" },
+      },
+    ],
   };
+}
+
+/** Attach the challenge to a response: header (validated) + body (mirror). */
+export function send402(res: Response, challenge: X402Challenge): void {
+  res.setHeader("PAYMENT-REQUIRED", Buffer.from(JSON.stringify(challenge), "utf8").toString("base64"));
+  res.status(402).json(challenge);
 }
 
 /**
  * Express middleware guarding story-creation endpoints.
- * Always attaches quota headers; only blocks in challenge mode.
+ *
+ * Free mode (A2MCP "free endpoint"): always proceeds — HTTP 200 with the
+ * result directly. A courtesy quota is enforced with 429 (never 402, which
+ * would misrepresent the service as paid).
+ *
+ * Challenge mode (A2MCP "x402 pay-per-call endpoint"): every call without a
+ * valid payment gets the standard 402 + PAYMENT-REQUIRED challenge; after
+ * payment the request is replayed with X-PAYMENT and proceeds.
  */
 export function x402Guard(cfg: X402Config, meter: UsageMeter) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const key = clientKey(req);
-    const used = meter.hit(key);
-    const remaining = Math.max(0, cfg.freeDaily - used);
-    res.setHeader("X-Free-Calls-Remaining", String(remaining));
     res.setHeader("X-Payment-Mode", cfg.mode);
 
-    if (cfg.mode === "free" || used <= cfg.freeDaily) {
+    if (cfg.mode === "free") {
+      const used = meter.hit(clientKey(req));
+      const remaining = Math.max(0, cfg.freeDaily - used);
+      res.setHeader("X-Free-Calls-Remaining", String(remaining));
+      if (used > cfg.freeDaily) {
+        res.status(429).json({
+          error: `Free daily quota (${cfg.freeDaily}) exhausted. Retry after 00:00 UTC.`,
+        });
+        return;
+      }
       next();
       return;
     }
 
-    // Payment provided? This is the OKX SDK settlement integration point.
+    // x402 pay-per-call: no payment header → standard 402 challenge.
     const paymentHeader = req.headers["x-payment"];
-    if (typeof paymentHeader === "string" && paymentHeader.length > 0) {
-      // In production wire @okxweb3/x402-express here to verify + settle,
-      // then `next()` on success. Without merchant credentials we cannot
-      // settle, so we decline explicitly rather than pretend.
-      res.status(402).json({
-        x402Version: 2,
-        error: "Payment verification unavailable in this deployment; settlement requires the operator's OKX payment credentials.",
-        accepts: [buildRequirements(cfg, req.path)],
-      });
+    if (typeof paymentHeader !== "string" || paymentHeader.length === 0) {
+      send402(res, buildChallenge(cfg, req.path));
       return;
     }
 
-    const requirements = buildRequirements(cfg, req.path);
-    const challenge = {
-      x402Version: 2,
-      error: `Free daily quota (${cfg.freeDaily}) exhausted. Pay ${cfg.priceUsd} USDT0 on X Layer per story, or retry after 00:00 UTC.`,
-      accepts: [requirements],
-    };
-    res.setHeader("PAYMENT-REQUIRED", Buffer.from(JSON.stringify(challenge), "utf8").toString("base64"));
-    res.status(402).json(challenge);
+    // Payment provided — the OKX Payment SDK settlement integration point.
+    // In production wire @okxweb3/x402-express here to verify + settle
+    // (EIP-3009 signature, amount/nonce/validity, replay protection), then
+    // `next()` on success. Without merchant credentials we cannot settle,
+    // so we re-issue the challenge rather than pretend to accept payment.
+    send402(res, buildChallenge(cfg, req.path));
   };
 }
 
@@ -171,12 +198,12 @@ export function x402Info(cfg: X402Config): Record<string, unknown> {
     protocol: {
       name: "x402",
       version: 2,
-      challengeHeader: "PAYMENT-REQUIRED (base64 JSON, mirrored in the 402 response body)",
+      challengeHeader: "PAYMENT-REQUIRED (base64 JSON — validated by the marketplace; mirrored in the 402 body)",
       paymentHeader: "X-PAYMENT",
     },
     notes: [
-      "Free endpoints return HTTP 200 with the result directly (A2MCP-compliant).",
-      "In challenge mode, the first FREE_DAILY calls per client per UTC day are free.",
+      "Free mode: every call returns HTTP 200 with the result directly (A2MCP-compliant).",
+      "Paid mode: every unpaid call returns HTTP 402 with a standard x402 v2 challenge; pay, and the request is replayed.",
     ],
   };
 }

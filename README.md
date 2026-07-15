@@ -52,14 +52,15 @@ Optional env (see `.env.example`):
 | `PORT` | `8484` | HTTP port |
 | `PUBLIC_BASE_URL` | `http://localhost:8484` | Used in returned story URLs |
 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | *(unset)* | Optional AI narration (OpenAI-compatible `/chat/completions`). Without it, the deterministic narrator runs — the service never depends on an upstream LLM. |
-| `X402_MODE` | `free` | `free` or `challenge` (emit HTTP 402 after quota) |
+| `X402_MODE` | `free` | `free` (200 + result) or `challenge` (402 per unpaid call) |
 | `X402_PAY_TO` | zero address | Your X Layer receiving address |
 | `X402_PRICE_USD` | `0.20` | Price per story (USDT0) |
 | `FREE_DAILY` | `25` | Free stories per client per UTC day |
 | `DATA_DIR` | `./data` | Story storage (JSON + HTML files) |
 
 ```bash
-npm test             # 30 tests: csv, stats, narrative audit, pipeline, XSS
+npm test             # 43 tests: csv, stats, narrative audit, pipeline, XSS,
+                     # x402 challenge shape, A2MCP self-check compliance
 npm run typecheck    # strict TS, noUncheckedIndexedAccess
 npm run build && npm start
 ```
@@ -107,9 +108,10 @@ curl -X POST https://YOUR-DEPLOYMENT/api/story \
 
 ## Payments (x402 on OKX X Layer)
 
-- **Free tier:** `FREE_DAILY` stories per client per UTC day. Every response carries `X-Free-Calls-Remaining`.
-- **A2MCP compliance:** free endpoints return **HTTP 200 with the result directly** — exactly what the OKX.AI review expects.
-- **Paid mode (`X402_MODE=challenge`):** once quota is exhausted, the server responds `402` with a spec-correct **x402 v2 challenge** — base64 JSON in the `PAYMENT-REQUIRED` header (mirrored in the body): scheme `exact`, network `eip155:196` (X Layer), asset USDT0 (`0x779d…3736`, 6 decimals), `payTo` = your address.
+Plotline implements both A2MCP endpoint types exactly as the marketplace validates them (`curl -i -X POST https://host/mcp`):
+
+- **Free mode (default):** every call returns **HTTP 200 with the result directly**. Story creation is metered at `FREE_DAILY` per client per UTC day (`X-Free-Calls-Remaining` header); over quota returns `429` — never a misleading `402`.
+- **Paid mode (`X402_MODE=challenge`):** **every unpaid call** returns `402` with a spec-correct **x402 v2 challenge** — base64 JSON in the `PAYMENT-REQUIRED` header (that header is what the marketplace validates), mirrored in the body: scheme `exact`, network `eip155:196` (X Layer), asset USDT0 (`0x779d…3736`, 6 decimals, `amount` in minimal units), `payTo` = your address, `maxTimeoutSeconds: 300`.
 - **Settlement integration point:** `src/x402.ts` marks exactly where `@okxweb3/x402-express` verification/settlement drops in with merchant credentials. Until then, the server declines unverifiable payments honestly rather than pretending to settle.
 
 ## Architecture
@@ -127,9 +129,11 @@ src/
                 count-up stats, progress bar, fact-ledger appendix)
   pipeline.ts   csv → facts → narrative → page, input limits, safe errors
   store.ts      JSON+HTML file store with LRU cache
-  x402.ts       quota meter + x402 v2 challenge emission
+  x402.ts       quota meter + spec-exact x402 v2 challenge emission
   mcp.ts        MCP server: 5 tools with input/output schemas
-  index.ts      Express wiring: REST, MCP (stateless streamable HTTP), static
+  app.ts        Express wiring: REST, MCP (stateless streamable HTTP), static,
+                A2MCP compliance layer (bare probe → 200, paid → 402 always)
+  index.ts      thin entrypoint (env → createApp → listen)
 ```
 
 Design choices worth noting:

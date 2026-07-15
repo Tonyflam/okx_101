@@ -268,8 +268,8 @@ export function createMcpServer(deps: McpDeps): McpServer {
       const p = deps.x402;
       const text =
         p.mode === "free"
-          ? `Plotline is currently **free**: ${p.freeDaily} courtesy calls/day per client (quota shown in the X-Free-Calls-Remaining header). Paid mode: ${p.priceUsd} USDT0 per story via x402 on OKX X Layer.`
-          : `Freemium: first ${p.freeDaily} stories/day free, then ${p.priceUsd} USDT0 per story via x402 (HTTP 402 challenge, USDT0 on OKX X Layer, pay-to ${p.payTo}).`;
+          ? `Plotline is currently **free**: ${p.freeDaily} courtesy calls/day per client (quota shown in the X-Free-Calls-Remaining header). Paid deployments charge ${p.priceUsd} USDT0 per story via x402 on OKX X Layer.`
+          : `Pay-per-call via x402: every unpaid call returns HTTP 402 with a PAYMENT-REQUIRED challenge (${p.priceUsd} USDT0 on OKX X Layer, pay-to ${p.payTo}); pay and the request is replayed.`;
       return {
         content: [{ type: "text", text }],
         structuredContent: {
