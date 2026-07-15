@@ -117,10 +117,25 @@ export interface ProofCheck {
   detail: string;
 }
 
-/** Verify hashes + signature of a story spec's embedded proof (no recompute). */
-export function verifyProof(spec: StorySpec, csv?: string): ProofCheck {
+/**
+ * Verify hashes + signature of a story spec's embedded proof (no recompute).
+ *
+ * `trustedKeys` — the set of Plotline signing keys the verifier trusts (the
+ * server's own key plus any pinned via PROOF_TRUSTED_KEYS). The embedded key
+ * MUST be in this set: without pinning, an attacker could tamper a story,
+ * recompute all hashes, and re-sign with their own key — the signature would
+ * be internally consistent but prove nothing about origin.
+ */
+export function verifyProof(spec: StorySpec, trustedKeys: readonly string[], csv?: string): ProofCheck {
   const proof = spec.proof;
   if (!proof) return { ok: false, detail: "No proof bundle embedded in this story." };
+  if (!trustedKeys.includes(proof.publicKey)) {
+    return {
+      ok: false,
+      detail:
+        "Signing key is NOT a trusted Plotline key — the proof may be internally consistent but was not produced by a trusted engine (re-signed forgery?). Pin keys via GET /api/proof-key or PROOF_TRUSTED_KEYS.",
+    };
+  }
   const { proof: _drop, ...specSansProof } = spec;
   const storySha = sha256Hex(canonicalJson(specSansProof));
   if (storySha !== proof.storySha256) {
@@ -145,5 +160,14 @@ export function verifyProof(spec: StorySpec, csv?: string): ProofCheck {
     sigOk = false;
   }
   if (!sigOk) return { ok: false, detail: "Ed25519 signature is invalid for this proof bundle." };
-  return { ok: true, detail: `Hashes match and Ed25519 signature verifies (engine ${proof.engine}).` };
+  return { ok: true, detail: `Hashes match, signing key is trusted, and the Ed25519 signature verifies (engine ${proof.engine}).` };
+}
+
+/** Trusted key set: the server's own key + any pinned via PROOF_TRUSTED_KEYS (comma-separated base64 SPKI). */
+export function trustedKeysFromEnv(ownKey: string): string[] {
+  const extra = (process.env.PROOF_TRUSTED_KEYS ?? "")
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean);
+  return [ownKey, ...extra];
 }

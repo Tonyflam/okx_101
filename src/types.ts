@@ -53,6 +53,10 @@ export interface Fact {
   sourceRows?: number[];
   /** Statistical confidence — attached only where inference happens. */
   confidence?: FactConfidence;
+  /** Axis span the fact covers (series-based facts), e.g. {from:"2024-01", to:"2024-08"}. */
+  period?: { from: string; to: string };
+  /** Category the fact singles out (category_leader / concentration). */
+  category?: string;
   chart?: ChartSpec;
 }
 
@@ -127,7 +131,33 @@ export interface InsightScene {
   headline: string;
   body: string;
   factIds: string[];
+  /** Structured, field-verifiable representation of what this scene claims. */
+  claim?: SceneClaim;
   chart?: ChartSpec;
+}
+
+/**
+ * A machine-checkable claim: every field is derived deterministically from the
+ * bound fact and re-derived + compared field-by-field during verification.
+ * Prose cannot smuggle in a different metric, unit, period, category,
+ * operation, or direction than the fact actually measured.
+ */
+export interface SceneClaim {
+  factId: string;
+  /** Statistical operation behind the claim, e.g. "ols_trend", "mean_shift". */
+  operation: string;
+  /** Primary column the claim is about. */
+  metric: string;
+  /** Second column for relational claims (correlation, category grouping). */
+  secondaryMetric?: string;
+  /** Unit semantics of the headline value, e.g. "percent-change", "pearson-r". */
+  unit: string;
+  /** Computed direction; null for non-directional claims. */
+  direction: "up" | "down" | "flat" | null;
+  /** Axis span the claim covers. */
+  period?: { from: string; to: string };
+  /** Category singled out, when applicable. */
+  category?: string;
 }
 
 export interface ClosingScene {

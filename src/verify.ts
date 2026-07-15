@@ -10,13 +10,18 @@
 
 import { parseCsv } from "./csv.js";
 import { extractFacts } from "./insights.js";
-import { auditClaimText, extractNumbers, factAllowedNumbers } from "./narrative.js";
+import { auditClaimText, claimDiff, claimFromFact, extractNumbers, factAllowedNumbers } from "./narrative.js";
 import { sha256Hex, verifyProof } from "./proof.js";
 import type { Fact, StorySpec, VerifyCheck, VerifyReport, VerifyVerdict } from "./types.js";
 
 const NUM_TOLERANCE = 1e-6;
 
-export function verifyStory(csv: string, spec: StorySpec, engine: string): VerifyReport {
+export function verifyStory(
+  csv: string,
+  spec: StorySpec,
+  engine: string,
+  trustedKeys: readonly string[],
+): VerifyReport {
   const checks: VerifyCheck[] = [];
   let sourceMismatch = false;
   let tampered = false;
@@ -35,7 +40,7 @@ export function verifyStory(csv: string, spec: StorySpec, engine: string): Verif
     });
     if (!csvOk) sourceMismatch = true;
 
-    const sig = verifyProof(spec);
+    const sig = verifyProof(spec, trustedKeys);
     checks.push({ name: "proof-signature", ok: sig.ok, detail: sig.detail });
     if (!sig.ok) tampered = true;
   } else {
@@ -48,6 +53,7 @@ export function verifyStory(csv: string, spec: StorySpec, engine: string): Verif
 
   // ── Layer 2: every fact must reproduce from the raw data ────────────────
   let factsChecked = 0;
+  let freshById: Map<string, Fact> | null = null;
   if (!sourceMismatch) {
     let recomputed: Fact[] | null = null;
     try {
@@ -63,6 +69,7 @@ export function verifyStory(csv: string, spec: StorySpec, engine: string): Verif
     }
     if (recomputed) {
       const byId = new Map(recomputed.map((f) => [f.id, f]));
+      freshById = byId;
       const failures: string[] = [];
       for (const claimed of spec.facts) {
         factsChecked++;
@@ -83,6 +90,9 @@ export function verifyStory(csv: string, spec: StorySpec, engine: string): Verif
   }
 
   // ── Layer 3: every scene claim must be supported by its bound fact ──────
+  // 3a. structured fields (metric/unit/period/category/operation/direction)
+  //     are re-derived from the RECOMPUTED fact and compared field-by-field;
+  // 3b. prose is audited against the bound fact (numbers + direction words).
   let claimsChecked = 0;
   if (!sourceMismatch) {
     const factById = new Map(spec.facts.map((f) => [f.id, f]));
@@ -98,6 +108,20 @@ export function verifyStory(csv: string, spec: StorySpec, engine: string): Verif
         continue;
       }
       for (const id of ids) sceneFactIds.add(id);
+      // 3a. Structured claim: verify each field against the recomputed fact.
+      if (scene.claim) {
+        const fresh = freshById?.get(scene.claim.factId);
+        if (!fresh) {
+          failures.push(`scene "${truncate(scene.headline, 40)}": claim references fact ${scene.claim.factId} which does not reproduce`);
+          continue;
+        }
+        const diff = claimDiff(scene.claim, claimFromFact(fresh));
+        if (diff) {
+          failures.push(`scene "${truncate(scene.headline, 40)}": claim field mismatch — ${diff}`);
+          continue;
+        }
+      }
+      // 3b. Prose audit against the bound fact.
       const text = `${scene.headline} ${scene.body}`;
       const results = bound.map((f) => auditClaimText(f, text));
       const anyOk = results.some((r) => r.ok);

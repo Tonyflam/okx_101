@@ -5,6 +5,7 @@ import type {
   InsightScene,
   NumericAudit,
   Scene,
+  SceneClaim,
   StorySpec,
   Tone,
 } from "./types.js";
@@ -295,6 +296,7 @@ export function deterministicNarrative(
       headline: f.headline,
       body: `${opener} ${f.statement}${kicker ? " " + kicker : ""}`,
       factIds: [f.id],
+      claim: claimFromFact(f),
       chart: f.chart,
     });
   });
@@ -421,6 +423,7 @@ async function aiNarrative(
       headline: ok ? truncate(d.headline, 80) : detScene.headline,
       body: ok ? truncate(d.body, 420) : detScene.body,
       factIds: [f.id],
+      claim: claimFromFact(f),
       chart: f.chart,
     });
     if (!ok) audit.rewritten++;
@@ -583,6 +586,65 @@ export function factDirection(f: Fact): "up" | "down" | "flat" | null {
 export interface ClaimAudit {
   ok: boolean;
   reason?: string;
+}
+
+// ── Structured claims ────────────────────────────────────────────────────────
+
+const OPERATION_BY_KIND: Record<FactKind, { operation: string; unit: string }> = {
+  overview: { operation: "row_count", unit: "count" },
+  trend: { operation: "ols_trend", unit: "percent-change" },
+  delta: { operation: "delta", unit: "percent-change" },
+  changepoint: { operation: "mean_shift", unit: "percent-change" },
+  outlier: { operation: "mad_outlier", unit: "absolute-value" },
+  volatility: { operation: "coefficient_of_variation", unit: "ratio" },
+  correlation: { operation: "pearson_correlation", unit: "pearson-r" },
+  category_leader: { operation: "group_sum_leader", unit: "sum" },
+  concentration: { operation: "top_n_share", unit: "percent-share" },
+  extreme: { operation: "min_max", unit: "absolute-value" },
+  streak: { operation: "monotonic_run", unit: "percent-change" },
+  seasonal: { operation: "seasonal_mean", unit: "percent-vs-mean" },
+};
+
+/**
+ * Deterministically derive the structured claim a scene makes from its bound
+ * fact. Verification re-derives this from the RECOMPUTED fact and compares
+ * field-by-field — so metric, unit, period, category, operation and direction
+ * are each independently checkable.
+ */
+export function claimFromFact(f: Fact): SceneClaim {
+  const meta = OPERATION_BY_KIND[f.kind] ?? { operation: f.kind, unit: "value" };
+  const claim: SceneClaim = {
+    factId: f.id,
+    operation: meta.operation,
+    metric: f.columns[0] ?? "",
+    unit: meta.unit,
+    direction: factDirection(f),
+  };
+  if (f.columns.length > 1) claim.secondaryMetric = f.columns[1];
+  if (f.period) claim.period = { ...f.period };
+  if (f.category !== undefined) claim.category = f.category;
+  return claim;
+}
+
+/** Field-by-field comparison of a stored claim vs one re-derived from the recomputed fact. */
+export function claimDiff(stored: SceneClaim, fresh: SceneClaim): string | null {
+  if (stored.factId !== fresh.factId) return `factId "${stored.factId}" ≠ "${fresh.factId}"`;
+  if (stored.operation !== fresh.operation) return `operation "${stored.operation}" ≠ recomputed "${fresh.operation}"`;
+  if (stored.metric !== fresh.metric) return `metric "${stored.metric}" ≠ recomputed "${fresh.metric}"`;
+  if ((stored.secondaryMetric ?? null) !== (fresh.secondaryMetric ?? null)) {
+    return `secondaryMetric "${stored.secondaryMetric ?? "—"}" ≠ recomputed "${fresh.secondaryMetric ?? "—"}"`;
+  }
+  if (stored.unit !== fresh.unit) return `unit "${stored.unit}" ≠ recomputed "${fresh.unit}"`;
+  if ((stored.direction ?? null) !== (fresh.direction ?? null)) {
+    return `direction "${stored.direction ?? "none"}" ≠ recomputed "${fresh.direction ?? "none"}"`;
+  }
+  if ((stored.period?.from ?? null) !== (fresh.period?.from ?? null) || (stored.period?.to ?? null) !== (fresh.period?.to ?? null)) {
+    return `period ${stored.period ? `${stored.period.from}→${stored.period.to}` : "—"} ≠ recomputed ${fresh.period ? `${fresh.period.from}→${fresh.period.to}` : "—"}`;
+  }
+  if ((stored.category ?? null) !== (fresh.category ?? null)) {
+    return `category "${stored.category ?? "—"}" ≠ recomputed "${fresh.category ?? "—"}"`;
+  }
+  return null;
 }
 
 /**

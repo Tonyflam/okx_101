@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { analyzeCsv, createStory, UserError } from "./pipeline.js";
-import type { ProofSigner } from "./proof.js";
+import { trustedKeysFromEnv, type ProofSigner } from "./proof.js";
 import type { StoryStore } from "./store.js";
 import { verifyStory } from "./verify.js";
 import type { StorySpec } from "./types.js";
@@ -262,7 +262,8 @@ export function createMcpServer(deps: McpDeps): McpServer {
         } else {
           throw new UserError("Provide either story_id or spec_json.");
         }
-        const report = verifyStory(args.csv, spec, `plotline@${deps.version}`);
+        const trusted = deps.signer ? trustedKeysFromEnv(deps.signer.publicKey) : [];
+        const report = verifyStory(args.csv, spec, `plotline@${deps.version}`, trusted);
         const icon = report.verdict === "VERIFIED" ? "✅" : "❌";
         const text = [
           `${icon} **${report.verdict}** — story \`${report.storyId}\``,

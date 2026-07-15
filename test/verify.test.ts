@@ -34,10 +34,14 @@ function testSigner(): ProofSigner {
   return { privateKey, publicKey };
 }
 
+// The "Plotline instance" key for this suite — pinned as trusted.
+const SIGNER = testSigner();
+const TRUSTED = [SIGNER.publicKey];
+
 async function makeStory(): Promise<StorySpec> {
   const result = await createStory(
     { csv: CSV, datasetName: "adversarial test" },
-    { baseUrl: "http://test.example", save: () => {}, signer: testSigner(), engine: ENGINE },
+    { baseUrl: "http://test.example", save: () => {}, signer: SIGNER, engine: ENGINE },
   );
   return result.spec;
 }
@@ -48,17 +52,30 @@ const clone = (spec: StorySpec): StorySpec => JSON.parse(JSON.stringify(spec)) a
 
 test("verify_story: untouched story verifies end-to-end", async () => {
   const spec = await makeStory();
-  const report = verifyStory(CSV, spec, ENGINE);
+  const report = verifyStory(CSV, spec, ENGINE, TRUSTED);
   assert.equal(report.verdict, "VERIFIED");
   assert.ok(report.factsChecked >= 3);
   assert.ok(report.claimsChecked >= 3);
   assert.ok(report.checks.every((c) => c.ok));
 });
 
+test("every insight scene carries a structured, field-verifiable claim", async () => {
+  const spec = await makeStory();
+  const insights = spec.scenes.filter((s): s is InsightScene => s.kind === "insight");
+  assert.ok(insights.length >= 3);
+  for (const s of insights) {
+    assert.ok(s.claim, `scene "${s.headline}" must carry a claim`);
+    assert.equal(s.claim!.factId, s.factIds[0]);
+    assert.ok(s.claim!.metric.length > 0);
+    assert.ok(s.claim!.operation.length > 0);
+    assert.ok(s.claim!.unit.length > 0);
+  }
+});
+
 test("proof bundle: hashes + Ed25519 signature verify", async () => {
   const spec = await makeStory();
   assert.ok(spec.proof, "story must embed a proof bundle");
-  const check = verifyProof(spec, CSV);
+  const check = verifyProof(spec, TRUSTED, CSV);
   assert.ok(check.ok, check.detail);
   assert.equal(spec.proof!.csvSha256, sha256Hex(Buffer.from(CSV, "utf8")));
 });
@@ -86,12 +103,68 @@ test("adversarial: reversed trend direction → UNSUPPORTED_CLAIM", async () => 
   if (!/fell|fall|declin|decreas/i.test(`${scene.headline} ${scene.body}`)) {
     scene.body = `It fell sharply. ${scene.body}`;
   }
-  // Strip proof so we exercise the claim layer, not the hash layer.
+  // Strip proof + structured claim so we exercise the prose layer in isolation.
   delete spec.proof;
-  const report = verifyStory(CSV, spec, ENGINE);
+  delete scene.claim;
+  const report = verifyStory(CSV, spec, ENGINE, TRUSTED);
   assert.equal(report.verdict, "UNSUPPORTED_CLAIM");
   const claims = report.checks.find((c) => c.name === "claims-supported");
   assert.ok(claims && !claims.ok && /decline|increase/i.test(claims.detail));
+});
+
+// ── Structured claim fields: each field is verified against the recompute ──
+
+test("adversarial: forged claim.direction field → UNSUPPORTED_CLAIM", async () => {
+  const spec = await makeStory();
+  const scene = spec.scenes.find(
+    (s): s is InsightScene => s.kind === "insight" && s.claim?.direction === "up",
+  );
+  assert.ok(scene, "needs an upward claim");
+  scene.claim!.direction = "down";
+  delete spec.proof;
+  const report = verifyStory(CSV, spec, ENGINE, TRUSTED);
+  assert.equal(report.verdict, "UNSUPPORTED_CLAIM");
+  const claims = report.checks.find((c) => c.name === "claims-supported");
+  assert.ok(claims && !claims.ok && /direction/i.test(claims.detail));
+});
+
+test("adversarial: forged claim.metric (swapped column) → UNSUPPORTED_CLAIM", async () => {
+  const spec = await makeStory();
+  const scene = spec.scenes.find(
+    (s): s is InsightScene => s.kind === "insight" && s.claim?.metric === "revenue",
+  );
+  assert.ok(scene, "needs a revenue-metric claim");
+  scene.claim!.metric = "costs";
+  delete spec.proof;
+  const report = verifyStory(CSV, spec, ENGINE, TRUSTED);
+  assert.equal(report.verdict, "UNSUPPORTED_CLAIM");
+  const claims = report.checks.find((c) => c.name === "claims-supported");
+  assert.ok(claims && !claims.ok && /metric/i.test(claims.detail));
+});
+
+test("adversarial: forged claim.period → UNSUPPORTED_CLAIM", async () => {
+  const spec = await makeStory();
+  const scene = spec.scenes.find(
+    (s): s is InsightScene => s.kind === "insight" && Boolean(s.claim?.period),
+  );
+  assert.ok(scene, "needs a period-bearing claim");
+  scene.claim!.period = { from: "2019-01", to: "2019-12" };
+  delete spec.proof;
+  const report = verifyStory(CSV, spec, ENGINE, TRUSTED);
+  assert.equal(report.verdict, "UNSUPPORTED_CLAIM");
+  const claims = report.checks.find((c) => c.name === "claims-supported");
+  assert.ok(claims && !claims.ok && /period/i.test(claims.detail));
+});
+
+test("adversarial: forged claim.operation/unit → UNSUPPORTED_CLAIM", async () => {
+  const spec = await makeStory();
+  const scene = spec.scenes.find((s): s is InsightScene => s.kind === "insight" && Boolean(s.claim));
+  assert.ok(scene);
+  scene.claim!.operation = "mean_shift";
+  scene.claim!.unit = "pearson-r";
+  delete spec.proof;
+  const report = verifyStory(CSV, spec, ENGINE, TRUSTED);
+  assert.equal(report.verdict, "UNSUPPORTED_CLAIM");
 });
 
 test("adversarial: invented percentage → UNSUPPORTED_CLAIM", async () => {
@@ -100,7 +173,7 @@ test("adversarial: invented percentage → UNSUPPORTED_CLAIM", async () => {
   assert.ok(scene);
   scene.body += " Margins expanded 47.3% in the same window.";
   delete spec.proof;
-  const report = verifyStory(CSV, spec, ENGINE);
+  const report = verifyStory(CSV, spec, ENGINE, TRUSTED);
   assert.equal(report.verdict, "UNSUPPORTED_CLAIM");
 });
 
@@ -113,7 +186,7 @@ test("adversarial: number swapped in from a different fact → UNSUPPORTED_CLAIM
   assert.ok(donorNum !== undefined, "needs a distinctive donor number");
   scenes[0]!.body += ` The figure reached ${donorNum} at its height.`;
   delete spec.proof;
-  const report = verifyStory(CSV, spec, ENGINE);
+  const report = verifyStory(CSV, spec, ENGINE, TRUSTED);
   // The donor number belongs to another fact — the per-scene binding must reject it
   // (unless by coincidence it also exists in the bound fact's values).
   const bound = spec.facts.find((f) => f.id === scenes[0]!.factIds[0])!;
@@ -126,7 +199,7 @@ test("adversarial: tampered fact value → TAMPERED", async () => {
   const fact = spec.facts.find((f) => f.kind === "trend")!;
   fact.values.changePct = (fact.values.changePct ?? 0) * 2; // double the growth
   delete spec.proof;
-  const report = verifyStory(CSV, spec, ENGINE);
+  const report = verifyStory(CSV, spec, ENGINE, TRUSTED);
   assert.equal(report.verdict, "TAMPERED");
   const facts = report.checks.find((c) => c.name === "facts-reproduce");
   assert.ok(facts && !facts.ok && facts.detail.includes("changePct"));
@@ -135,7 +208,7 @@ test("adversarial: tampered fact value → TAMPERED", async () => {
 test("adversarial: modified source dataset → SOURCE_MISMATCH", async () => {
   const spec = await makeStory();
   const doctored = CSV.replace("420", "990"); // change one cell
-  const report = verifyStory(doctored, spec, ENGINE);
+  const report = verifyStory(doctored, spec, ENGINE, TRUSTED);
   assert.equal(report.verdict, "SOURCE_MISMATCH");
   const hash = report.checks.find((c) => c.name === "dataset-hash");
   assert.ok(hash && !hash.ok);
@@ -144,10 +217,26 @@ test("adversarial: modified source dataset → SOURCE_MISMATCH", async () => {
 test("adversarial: spec edited after signing → TAMPERED (signature catches it)", async () => {
   const spec = await makeStory();
   spec.title = "Totally legitimate unedited story";
-  const report = verifyStory(CSV, spec, ENGINE);
+  const report = verifyStory(CSV, spec, ENGINE, TRUSTED);
   assert.equal(report.verdict, "TAMPERED");
   const sig = report.checks.find((c) => c.name === "proof-signature");
   assert.ok(sig && !sig.ok);
+});
+
+test("adversarial: fully consistent re-sign with attacker's key → TAMPERED (key not pinned)", async () => {
+  const spec = await makeStory();
+  spec.title = "Edited story";
+  // The strongest forgery: attacker recomputes ALL hashes over the edited spec
+  // and signs with their own key. Every hash and the signature are internally
+  // consistent — only key pinning catches it.
+  const attacker = testSigner();
+  const { proof: _old, ...sansProof } = spec;
+  spec.proof = buildProof(CSV, sansProof as StorySpec, attacker, ENGINE);
+  assert.ok(verifyProof(spec, [attacker.publicKey], CSV).ok, "forgery must be internally consistent");
+  const report = verifyStory(CSV, spec, ENGINE, TRUSTED);
+  assert.equal(report.verdict, "TAMPERED");
+  const sig = report.checks.find((c) => c.name === "proof-signature");
+  assert.ok(sig && !sig.ok && /trusted/i.test(sig.detail));
 });
 
 test("adversarial: forged proof with attacker's own key still fails (story hash mismatch)", async () => {
@@ -158,7 +247,7 @@ test("adversarial: forged proof with attacker's own key still fails (story hash 
   const stale = clone(spec);
   const forged: ProofBundle = { ...buildProof(CSV, stale, attacker, ENGINE), storySha256: spec.proof!.storySha256 };
   spec.proof = forged;
-  const report = verifyStory(CSV, spec, ENGINE);
+  const report = verifyStory(CSV, spec, ENGINE, TRUSTED);
   assert.equal(report.verdict, "TAMPERED");
 });
 

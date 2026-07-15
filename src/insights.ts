@@ -106,6 +106,7 @@ export function extractFacts(ds: Dataset, question?: string): Fact[] {
         evidence: `OLS regression over ${series.length} points; R²=${reg.r2.toFixed(2)}.`,
         sourceRows: capRows(series.map((p) => p.row)),
         confidence: inf ? trendConfidence(inf, series.length) : undefined,
+        period: seriesPeriod(series),
         chart,
       });
     }
@@ -138,6 +139,7 @@ export function extractFacts(ds: Dataset, question?: string): Fact[] {
               pValue: roundP(wt.p),
             }
           : { level: "low", note: "Segments too short for a significance test; effect size only." },
+        period: seriesPeriod(series),
         chart: lineChart(col.name, axis, series, undefined, cp.index),
       });
     }
@@ -165,6 +167,7 @@ export function extractFacts(ds: Dataset, question?: string): Fact[] {
           level: o.score >= 5 ? "high" : "medium",
           note: `Modified z-score ${o.score.toFixed(1)} (robust to the outlier itself); threshold 3.5.`,
         },
+        period: seriesPeriod(series),
         chart: lineChart(col.name, axis, series, undefined, o.index),
       });
     }
@@ -182,6 +185,7 @@ export function extractFacts(ds: Dataset, question?: string): Fact[] {
         values: { length: st.length, changePct: round2(st.changePct) },
         evidence: `Longest monotonic run: ${st.length} steps.`,
         sourceRows: capRows(series.slice(st.start, st.start + st.length + 1).map((p) => p.row)),
+        period: seriesPeriod(series.slice(st.start, st.start + st.length + 1)),
       });
     }
 
@@ -292,6 +296,7 @@ export function extractFacts(ds: Dataset, question?: string): Fact[] {
         values: { leader: round2(top.sum), share: round2(share), runnerUp: round2(runner.sum), groups: groups.length, leadRatio: round2(lead) },
         evidence: `Group sums of ${num.name} by ${cat.name}; ${groups.length} groups. Exact computation.`,
         sourceRows: capRows(top.rows),
+        category: top.key,
         chart: barChart(`${num.name} by ${cat.name}`, groups, 0),
       });
 
@@ -633,6 +638,14 @@ function round2(n: number): number {
 /** Cap provenance row lists so specs stay light. */
 function capRows(rows: number[]): number[] {
   return rows.length > 200 ? rows.slice(0, 200) : rows;
+}
+
+/** Axis span of a series, as displayed labels. */
+function seriesPeriod(series: SeriesPoint[]): { from: string; to: string } | undefined {
+  const first = series[0];
+  const last = series[series.length - 1];
+  if (!first || !last) return undefined;
+  return { from: first.label, to: last.label };
 }
 
 /** Format a p-value honestly: "<0.001" below resolution. */

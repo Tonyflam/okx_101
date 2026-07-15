@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createMcpServer } from "./mcp.js";
 import { createStory, UserError } from "./pipeline.js";
-import { loadSigner, type ProofSigner } from "./proof.js";
+import { loadSigner, trustedKeysFromEnv, type ProofSigner } from "./proof.js";
 import { StoryStore } from "./store.js";
 import { isValidStoryId } from "./util.js";
 import { verifyStory } from "./verify.js";
@@ -40,6 +40,7 @@ export function createApp(opts: AppOptions): Express {
   const meter = new UsageMeter();
   const guard = x402Guard(x402cfg, meter, facilitator);
   const signer: ProofSigner = loadSigner(opts.dataDir);
+  const trustedKeys = trustedKeysFromEnv(signer.publicKey);
   const ENGINE = `plotline@${VERSION}`;
 
   const app = express();
@@ -125,7 +126,7 @@ export function createApp(opts: AppOptions): Express {
       } else {
         throw new UserError("Provide `storyId` or a full `spec` object alongside `csv`.");
       }
-      res.json(verifyStory(csv, spec, ENGINE));
+      res.json(verifyStory(csv, spec, ENGINE, trustedKeys));
     } catch (err) {
       next(err);
     }
