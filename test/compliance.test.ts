@@ -125,7 +125,7 @@ test("MCP tools/list and tools/call create_story work end-to-end", async () => {
   const tools = ((await list.json()) as { result: { tools: { name: string }[] } }).result.tools.map((t) => t.name);
   assert.deepEqual(
     tools.sort(),
-    ["analyze_csv", "create_story", "get_pricing", "get_story", "list_themes"],
+    ["analyze_csv", "create_story", "get_pricing", "get_story", "list_themes", "verify_story"],
   );
 
   const csv = "month,revenue\n2024-01,100\n2024-02,130\n2024-03,170\n2024-04,220\n2024-05,290";
@@ -184,10 +184,18 @@ test("paid mode REST: unpaid POST /api/story gets 402 + PAYMENT-REQUIRED", async
 
 // ── x402 settlement via the OKX facilitator ───────────────────────────────
 
-const PAYMENT = Buffer.from(
-  JSON.stringify({ x402Version: 2, scheme: "exact", network: "eip155:196", payload: { signature: "0xsig" } }),
-  "utf8",
-).toString("base64");
+/** Unique per call — the replay cache correctly dedupes identical payloads. */
+function paymentHeader(): string {
+  return Buffer.from(
+    JSON.stringify({
+      x402Version: 2,
+      scheme: "exact",
+      network: "eip155:196",
+      payload: { signature: `0xsig-${Math.random().toString(36).slice(2)}` },
+    }),
+    "utf8",
+  ).toString("base64");
+}
 
 function fakeFacilitator(overrides: Partial<FacilitatorLike> = {}): FacilitatorLike {
   return {
@@ -201,7 +209,7 @@ test("paid + valid payment: MCP call settles and proceeds with PAYMENT-RESPONSE"
   const base = await listen("challenge", fakeFacilitator());
   const res = await fetch(`${base}/mcp`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-PAYMENT": PAYMENT },
+    headers: { "Content-Type": "application/json", "X-PAYMENT": paymentHeader() },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
   });
   assert.equal(res.status, 200);
@@ -219,7 +227,7 @@ test("paid + rejected payment: 402 challenge with the verification reason", asyn
   );
   const res = await fetch(`${base}/mcp`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-PAYMENT": PAYMENT },
+    headers: { "Content-Type": "application/json", "X-PAYMENT": paymentHeader() },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
   });
   assert.equal(res.status, 402);
@@ -234,7 +242,7 @@ test("paid + failed settlement: 402 challenge, never a silent success", async ()
   );
   const res = await fetch(`${base}/api/story`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-PAYMENT": PAYMENT },
+    headers: { "Content-Type": "application/json", "X-PAYMENT": paymentHeader() },
     body: JSON.stringify({ csv: "a,b\n1,2\n2,4\n3,6" }),
   });
   assert.equal(res.status, 402);
@@ -258,7 +266,7 @@ test("paid + payment but no credentials configured: honest 402, not fake success
   const base = await listen("challenge", null);
   const res = await fetch(`${base}/mcp`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-PAYMENT": PAYMENT },
+    headers: { "Content-Type": "application/json", "X-PAYMENT": paymentHeader() },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
   });
   assert.equal(res.status, 402);
@@ -270,11 +278,37 @@ test("paid + valid payment REST: story is created and receipt attached", async (
   const base = await listen("challenge", fakeFacilitator());
   const res = await fetch(`${base}/api/story`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-PAYMENT": PAYMENT },
+    headers: { "Content-Type": "application/json", "X-PAYMENT": paymentHeader() },
     body: JSON.stringify({ csv: "month,revenue\n2024-01,100\n2024-02,130\n2024-03,170\n2024-04,220\n2024-05,290" }),
   });
   assert.equal(res.status, 200);
   assert.ok(res.headers.get("payment-response"));
   const body = (await res.json()) as { url: string };
   assert.ok(body.url.includes("/story/"));
+});
+
+test("replay protection: the same X-PAYMENT settles exactly once", async () => {
+  let settleCalls = 0;
+  const base = await listen(
+    "challenge",
+    fakeFacilitator({
+      settle: async () => {
+        settleCalls++;
+        return { success: true, transaction: "0xtx-replay", network: "eip155:196", payer: "0xpayer" };
+      },
+    }),
+  );
+  const pay = paymentHeader();
+  const call = () =>
+    fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-PAYMENT": pay },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+  const [a, b] = await Promise.all([call(), call()]);
+  const c = await call();
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200);
+  assert.equal(c.status, 200);
+  assert.equal(settleCalls, 1, "duplicate X-PAYMENT must not settle twice");
 });

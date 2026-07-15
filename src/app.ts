@@ -4,8 +4,11 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createMcpServer } from "./mcp.js";
 import { createStory, UserError } from "./pipeline.js";
+import { loadSigner, type ProofSigner } from "./proof.js";
 import { StoryStore } from "./store.js";
 import { isValidStoryId } from "./util.js";
+import { verifyStory } from "./verify.js";
+import type { StorySpec } from "./types.js";
 import {
   UsageMeter,
   x402Guard,
@@ -18,7 +21,7 @@ import {
   type X402Config,
 } from "./x402.js";
 
-export const VERSION = "1.0.0";
+export const VERSION = "1.1.0";
 const ROOT = resolve(import.meta.dirname, "..");
 
 export interface AppOptions {
@@ -36,6 +39,8 @@ export function createApp(opts: AppOptions): Express {
   const store = new StoryStore(opts.dataDir);
   const meter = new UsageMeter();
   const guard = x402Guard(x402cfg, meter, facilitator);
+  const signer: ProofSigner = loadSigner(opts.dataDir);
+  const ENGINE = `plotline@${VERSION}`;
 
   const app = express();
   app.disable("x-powered-by");
@@ -72,7 +77,7 @@ export function createApp(opts: AppOptions): Express {
           theme: body.theme,
           datasetName: body.datasetName ?? body.dataset_name,
         },
-        { baseUrl: BASE_URL, save: (spec, html) => store.save(spec, html) },
+        { baseUrl: BASE_URL, save: (spec, html) => store.save(spec, html), signer, engine: ENGINE },
       );
       res.status(200).json({
         storyId: result.spec.id,
@@ -100,6 +105,35 @@ export function createApp(opts: AppOptions): Express {
       return;
     }
     res.json(spec);
+  });
+
+  // ── Independent verification: recompute everything, audit every claim ───
+  app.post("/api/verify", (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as { csv?: unknown; storyId?: unknown; spec?: unknown };
+      const csv = String(body.csv ?? "");
+      if (!csv.trim()) throw new UserError("`csv` is required — the original dataset to verify against.");
+      let spec: StorySpec | null = null;
+      if (typeof body.storyId === "string" && body.storyId) {
+        spec = isValidStoryId(body.storyId) ? store.getSpec(body.storyId) : null;
+        if (!spec) throw new UserError(`No story found with id \`${body.storyId}\`.`);
+      } else if (body.spec && typeof body.spec === "object") {
+        spec = body.spec as StorySpec;
+        if (!Array.isArray(spec.facts) || !Array.isArray(spec.scenes)) {
+          throw new UserError("`spec` does not look like a Plotline StorySpec (needs facts[] and scenes[]).");
+        }
+      } else {
+        throw new UserError("Provide `storyId` or a full `spec` object alongside `csv`.");
+      }
+      res.json(verifyStory(csv, spec, ENGINE));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Public verification key — pin this to verify proof bundles offline.
+  app.get("/api/proof-key", (_req, res) => {
+    res.json({ algorithm: "ed25519", format: "spki-der-base64", publicKey: signer.publicKey, engine: ENGINE });
   });
 
   app.get("/story/:id", (req, res) => {
@@ -176,16 +210,18 @@ export function createApp(opts: AppOptions): Express {
       res.status(200).json({
         ok: true,
         service: "plotline",
-        description: "Turn any CSV into a cinematic, scroll-animated data story with machine-verified numbers.",
+        description:
+          "Turn any CSV into a cinematic, scroll-animated data story where every claim is independently reproducible and cryptographically verifiable.",
         type: "A2MCP",
         transport: "MCP Streamable HTTP (JSON-RPC 2.0 over POST)",
-        tools: ["create_story", "analyze_csv", "get_story", "list_themes", "get_pricing"],
+        tools: ["create_story", "analyze_csv", "verify_story", "get_story", "list_themes", "get_pricing"],
         usage: "POST JSON-RPC to this endpoint: initialize → tools/list → tools/call",
         example: { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} },
         landing: BASE_URL,
         docs: `${BASE_URL}/llms.txt`,
         pricing: `${BASE_URL}/x402/info`,
         health: `${BASE_URL}/api/health`,
+        proofKey: `${BASE_URL}/api/proof-key`,
       });
       return;
     }
@@ -219,7 +255,7 @@ export function createApp(opts: AppOptions): Express {
   };
 
   app.post("/mcp", mcpCompliance, async (req, res) => {
-    const server = createMcpServer({ baseUrl: BASE_URL, store, x402: x402cfg, version: VERSION });
+    const server = createMcpServer({ baseUrl: BASE_URL, store, x402: x402cfg, version: VERSION, signer });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
@@ -286,30 +322,35 @@ a{color:#6ea8ff}</style></head>
 }
 
 function llmsTxt(BASE_URL: string): string {
-  return `# Plotline — the storytelling engine of the agent economy
+  return `# Plotline — verifiable data stories for the agent economy
 
-Turn any CSV into a cinematic, scroll-animated data story with machine-verified numbers.
+Turn any CSV into a cinematic, scroll-animated data story where every claim — not
+merely every number — is independently reproducible and cryptographically verifiable.
 
 ## What it does
 POST raw CSV (+ optional question) → deterministic statistics engine computes a fact
-ledger (trends, changepoints, MAD outliers, Pearson correlations, streaks, seasonality,
-category leaders, concentration) → narrative written around ONLY those facts, with every
-number audited against the ledger → returns a URL to a self-contained scrollytelling page.
+ledger (trends with 95% confidence intervals, changepoints with Welch significance
+tests, MAD outliers, Pearson correlations with p-values, streaks, seasonality,
+category leaders, concentration) with row-level provenance → narrative written around
+ONLY those facts; every number AND direction in AI prose is audited against the
+specific fact each scene is bound to → story ships with a signed proof bundle
+(SHA-256 of dataset/ledger/spec + Ed25519 signature, verifiable offline).
 
 ## Endpoints
 - MCP (Streamable HTTP): POST ${BASE_URL}/mcp
-  Tools: create_story, analyze_csv, get_story, list_themes, get_pricing
+  Tools: create_story, analyze_csv, verify_story, get_story, list_themes, get_pricing
 - REST: POST ${BASE_URL}/api/story  {"csv": "...", "question": "...", "tone": "documentary|boardroom|punchy", "theme": "midnight|paper|neon"}
+- Verify: POST ${BASE_URL}/api/verify  {"csv": "...", "storyId": "..."} → VERIFIED | TAMPERED | UNSUPPORTED_CLAIM | SOURCE_MISMATCH
 - Story page: GET ${BASE_URL}/story/{id}   · spec: GET ${BASE_URL}/story/{id}.json
-- Health: GET ${BASE_URL}/api/health · Pricing: GET ${BASE_URL}/x402/info
+- Proof key: GET ${BASE_URL}/api/proof-key · Health: GET ${BASE_URL}/api/health · Pricing: GET ${BASE_URL}/x402/info
 
 ## Pricing
 Free daily quota per client (see X-Free-Calls-Remaining header). Pay-per-story via
 x402 (USDT0 on OKX X Layer, network eip155:196) when quota is exhausted in paid mode.
 
-## Honesty model
-Numbers come from code, words follow the numbers — never the reverse. AI prose passes a
-numeric audit against the fact ledger; failing scenes are rewritten deterministically.
-Every story page includes its full fact-ledger appendix.
+## Trust model
+Numbers come from code, words follow the numbers — never the reverse. Scene claims
+are bound to specific facts (numbers + direction). verify_story re-runs the entire
+analysis from the raw CSV so any agent can audit any story — or catch a forged one.
 `;
 }

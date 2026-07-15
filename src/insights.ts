@@ -6,6 +6,9 @@ import {
   longestStreak,
   outliersMAD,
   pearson,
+  pearsonPValue,
+  regressionInference,
+  welchT,
 } from "./stats.js";
 import { clamp, dateGranularity, fmtDate, fmtNum, fmtPct, truncate } from "./util.js";
 
@@ -70,6 +73,7 @@ export function extractFacts(ds: Dataset, question?: string): Fact[] {
     // Trend + delta
     if (series.length >= 5) {
       const reg = linearRegression(series.map((_, i) => i), values);
+      const inf = regressionInference(series.map((_, i) => i), values);
       const first = values[0] as number;
       const last = values[values.length - 1] as number;
       const pct = first !== 0 ? ((last - first) / Math.abs(first)) * 100 : 0;
@@ -100,6 +104,8 @@ export function extractFacts(ds: Dataset, question?: string): Fact[] {
         columns: [col.name],
         values: { first, last, changePct: round2(pct), r2: round2(reg.r2), points: series.length, mean: round2(d.mean) },
         evidence: `OLS regression over ${series.length} points; R²=${reg.r2.toFixed(2)}.`,
+        sourceRows: capRows(series.map((p) => p.row)),
+        confidence: inf ? trendConfidence(inf, series.length) : undefined,
         chart,
       });
     }
@@ -110,15 +116,28 @@ export function extractFacts(ds: Dataset, question?: string): Fact[] {
       const shiftPct = cp.meanBefore !== 0 ? ((cp.meanAfter - cp.meanBefore) / Math.abs(cp.meanBefore)) * 100 : 0;
       const at = series[cp.index]?.label ?? `point ${cp.index + 1}`;
       const dir = cp.meanAfter > cp.meanBefore ? "jumped" : "dropped";
+      const wt = welchT(values.slice(0, cp.index), values.slice(cp.index));
+      const significant = wt !== null && wt.p < 0.05;
       facts.push({
         id: nextId(),
         kind: "changepoint",
         headline: `Something changed at ${at}`,
-        statement: `Around ${at}, the average level of ${col.name} ${dir} from ${fmtNum(cp.meanBefore)} to ${fmtNum(cp.meanAfter)} (${fmtPct(shiftPct)}) — a structural break, not noise (effect size ${cp.strength.toFixed(1)}).`,
+        statement:
+          `Around ${at}, the average level of ${col.name} ${dir} from ${fmtNum(cp.meanBefore)} to ${fmtNum(cp.meanAfter)} (${fmtPct(shiftPct)}) — a sustained level shift of ${cp.strength.toFixed(1)} pooled standard deviations` +
+          (significant ? `, statistically significant (Welch p=${fmtP(wt.p)})` : wt ? `, though the sample is small (Welch p=${fmtP(wt.p)})` : "") +
+          `.`,
         importance: boost(clamp(46 + cp.strength * 9, 0, 90), [col.name], question),
         columns: [col.name],
         values: { before: round2(cp.meanBefore), after: round2(cp.meanAfter), shiftPct: round2(shiftPct), effectSize: round2(cp.strength) },
-        evidence: `Mean-shift detection (binary segmentation), effect size ${cp.strength.toFixed(2)} pooled SDs.`,
+        evidence: `Mean-shift detection (binary segmentation), effect size ${cp.strength.toFixed(2)} pooled SDs` + (wt ? `; Welch t-test p=${fmtP(wt.p)}` : "") + `.`,
+        sourceRows: capRows(series.map((p) => p.row)),
+        confidence: wt
+          ? {
+              level: wt.p < 0.01 && cp.strength >= 1.5 ? "high" : wt.p < 0.05 ? "medium" : "low",
+              note: `Welch t-test across the split: p=${fmtP(wt.p)}, effect size ${cp.strength.toFixed(2)} pooled SDs.`,
+              pValue: roundP(wt.p),
+            }
+          : { level: "low", note: "Segments too short for a significance test; effect size only." },
         chart: lineChart(col.name, axis, series, undefined, cp.index),
       });
     }
@@ -141,6 +160,11 @@ export function extractFacts(ds: Dataset, question?: string): Fact[] {
         columns: [col.name],
         values: { value: round2(o.value), median: round2(d.median), zScore: round2(o.score), anomalies: outs.length },
         evidence: `MAD-based modified z-score ${o.score.toFixed(2)} (threshold 3.5), n=${values.length}.`,
+        sourceRows: series[o.index] ? [series[o.index]!.row] : undefined,
+        confidence: {
+          level: o.score >= 5 ? "high" : "medium",
+          note: `Modified z-score ${o.score.toFixed(1)} (robust to the outlier itself); threshold 3.5.`,
+        },
         chart: lineChart(col.name, axis, series, undefined, o.index),
       });
     }
@@ -157,6 +181,7 @@ export function extractFacts(ds: Dataset, question?: string): Fact[] {
         columns: [col.name],
         values: { length: st.length, changePct: round2(st.changePct) },
         evidence: `Longest monotonic run: ${st.length} steps.`,
+        sourceRows: capRows(series.slice(st.start, st.start + st.length + 1).map((p) => p.row)),
       });
     }
 
@@ -189,7 +214,8 @@ export function extractFacts(ds: Dataset, question?: string): Fact[] {
         importance: boost(20, [col.name], question),
         columns: [col.name],
         values: { max: round2(d.max), min: round2(d.min), sum: round2(d.sum) },
-        evidence: `Max/min over ${values.length} points.`,
+        evidence: `Max/min over ${values.length} points. Exact computation.`,
+        sourceRows: series[peakIdx] ? [series[peakIdx]!.row] : undefined,
       });
     }
 
@@ -208,6 +234,7 @@ export function extractFacts(ds: Dataset, question?: string): Fact[] {
       const { r, n } = pearson(pair.map((p) => p[0]), pair.map((p) => p[1]));
       if (Math.abs(r) >= 0.55 && n >= 6) {
         const reg = linearRegression(pair.map((p) => p[0]), pair.map((p) => p[1]));
+        const pv = pearsonPValue(r, n);
         const strength = Math.abs(r) >= 0.85 ? "a near lockstep" : Math.abs(r) >= 0.7 ? "a strong" : "a moderate";
         facts.push({
           id: nextId(),
@@ -217,7 +244,13 @@ export function extractFacts(ds: Dataset, question?: string): Fact[] {
           importance: boost(clamp(34 + Math.abs(r) * 44, 0, 86), [a.name, b.name], question),
           columns: [a.name, b.name],
           values: { r: round2(r), n },
-          evidence: `Pearson r=${r.toFixed(3)}, n=${n}. Correlation is not causation.`,
+          evidence: `Pearson r=${r.toFixed(3)}, n=${n}, p=${fmtP(pv)}. Correlation is not causation.`,
+          sourceRows: capRows(pair.map((p) => p[2])),
+          confidence: {
+            level: pv < 0.01 && n >= 10 ? "high" : pv < 0.05 ? "medium" : "low",
+            note: `p=${fmtP(pv)} for H0: ρ=0 (n=${n}). Correlation, not causation${n < 10 ? "; small sample" : ""}.`,
+            pValue: roundP(pv),
+          },
           chart: {
             type: "scatter",
             xLabel: a.name,
@@ -257,7 +290,8 @@ export function extractFacts(ds: Dataset, question?: string): Fact[] {
         importance: boost(clamp(38 + share * 0.4, 0, 84), [cat.name, num.name], question),
         columns: [cat.name, num.name],
         values: { leader: round2(top.sum), share: round2(share), runnerUp: round2(runner.sum), groups: groups.length, leadRatio: round2(lead) },
-        evidence: `Group sums of ${num.name} by ${cat.name}; ${groups.length} groups.`,
+        evidence: `Group sums of ${num.name} by ${cat.name}; ${groups.length} groups. Exact computation.`,
+        sourceRows: capRows(top.rows),
         chart: barChart(`${num.name} by ${cat.name}`, groups, 0),
       });
 
@@ -273,7 +307,8 @@ export function extractFacts(ds: Dataset, question?: string): Fact[] {
           importance: boost(clamp(34 + topShare * 0.42, 0, 80), [cat.name, num.name], question),
           columns: [cat.name, num.name],
           values: { topShare: round2(topShare), topN, groups: groups.length },
-          evidence: `Top-${topN} share of total ${num.name} = ${topShare.toFixed(1)}%.`,
+          evidence: `Top-${topN} share of total ${num.name} = ${topShare.toFixed(1)}%. Exact computation.`,
+          sourceRows: capRows(groups.slice(0, topN).flatMap((g) => g.rows)),
           chart: donutChart(`${num.name} share by ${cat.name}`, groups),
         });
       }
@@ -358,15 +393,16 @@ function buildSeries(ds: Dataset, sorted: number[], axis: Axis, colName: string)
   return out;
 }
 
-function alignedPairs(ds: Dataset, aName: string, bName: string): [number, number][] {
+function alignedPairs(ds: Dataset, aName: string, bName: string): [number, number, number][] {
   const ai = colIndex(ds, aName);
   const bi = colIndex(ds, bName);
-  const out: [number, number][] = [];
-  for (const r of ds.rows) {
+  const out: [number, number, number][] = [];
+  for (let row = 0; row < ds.rows.length; row++) {
+    const r = ds.rows[row]!;
     const a = r[ai];
     const b = r[bi];
     if (typeof a === "number" && typeof b === "number" && Number.isFinite(a) && Number.isFinite(b)) {
-      out.push([a, b]);
+      out.push([a, b, row]);
     }
   }
   return out;
@@ -382,22 +418,24 @@ function distinctCount(ds: Dataset, colName: string): number {
   return set.size;
 }
 
-function groupSum(ds: Dataset, catName: string, numName: string): { key: string; sum: number; count: number }[] {
+function groupSum(ds: Dataset, catName: string, numName: string): { key: string; sum: number; count: number; rows: number[] }[] {
   const ci = colIndex(ds, catName);
   const ni = colIndex(ds, numName);
-  const map = new Map<string, { sum: number; count: number }>();
-  for (const r of ds.rows) {
+  const map = new Map<string, { sum: number; count: number; rows: number[] }>();
+  for (let row = 0; row < ds.rows.length; row++) {
+    const r = ds.rows[row]!;
     const k = r[ci];
     const v = r[ni];
     if (typeof k !== "string" || k === "") continue;
     if (typeof v !== "number" || !Number.isFinite(v)) continue;
-    const g = map.get(k) ?? { sum: 0, count: 0 };
+    const g = map.get(k) ?? { sum: 0, count: 0, rows: [] };
     g.sum += v;
     g.count++;
+    if (g.rows.length < 200) g.rows.push(row);
     map.set(k, g);
   }
   return [...map.entries()]
-    .map(([key, g]) => ({ key, sum: g.sum, count: g.count }))
+    .map(([key, g]) => ({ key, sum: g.sum, count: g.count, rows: g.rows }))
     .sort((a, b) => b.sum - a.sum);
 }
 
@@ -580,14 +618,45 @@ function boost(importance: number, cols: string[], question?: string): number {
   return Math.round(clamp(importance + (hit ? 18 : 0), 0, 100));
 }
 
-function downsamplePairs(pairs: [number, number][], max: number): [number, number][] {
+function downsamplePairs(pairs: [number, number, number][], max: number): [number, number, number][] {
   if (pairs.length <= max) return pairs;
   const step = pairs.length / max;
-  const out: [number, number][] = [];
+  const out: [number, number, number][] = [];
   for (let i = 0; i < max; i++) out.push(pairs[Math.floor(i * step)]!);
   return out;
 }
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/** Cap provenance row lists so specs stay light. */
+function capRows(rows: number[]): number[] {
+  return rows.length > 200 ? rows.slice(0, 200) : rows;
+}
+
+/** Format a p-value honestly: "<0.001" below resolution. */
+function fmtP(p: number): string {
+  if (p < 0.001) return "<0.001";
+  return p.toFixed(3);
+}
+
+function roundP(p: number): number {
+  return p < 0.001 ? 0.001 : Math.round(p * 1000) / 1000;
+}
+
+function trendConfidence(
+  inf: { p: number; ci95: [number, number]; df: number },
+  n: number,
+): import("./types.js").FactConfidence {
+  const level = inf.p < 0.01 && n >= 8 ? "high" : inf.p < 0.05 ? "medium" : "low";
+  return {
+    level,
+    note:
+      `95% CI on slope [${round2(inf.ci95[0])}, ${round2(inf.ci95[1])}]; p=${fmtP(inf.p)} (df=${inf.df})` +
+      (n < 8 ? "; short series — treat as indicative" : "") +
+      `.`,
+    ci95: [round2(inf.ci95[0]), round2(inf.ci95[1])],
+    pValue: roundP(inf.p),
+  };
 }

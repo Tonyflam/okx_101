@@ -49,7 +49,21 @@ export interface Fact {
   values: Record<string, number>;
   /** Method note, e.g. "OLS linear regression, n=18, R²=0.91". */
   evidence: string;
+  /** Row indices (0-based, original row order) that produced this fact. Capped at 200. */
+  sourceRows?: number[];
+  /** Statistical confidence — attached only where inference happens. */
+  confidence?: FactConfidence;
   chart?: ChartSpec;
+}
+
+export interface FactConfidence {
+  level: "high" | "medium" | "low";
+  /** Human note, e.g. "95% CI on slope [3.1, 4.9]; p<0.001". */
+  note: string;
+  /** 95% confidence interval where applicable. */
+  ci95?: [number, number];
+  /** Two-sided p-value where applicable. */
+  pValue?: number;
 }
 
 // ── Charts ─────────────────────────────────────────────────────────────────
@@ -131,6 +145,47 @@ export interface NumericAudit {
   verified: number;
   /** Scenes rewritten with the deterministic narrator after failing audit. */
   rewritten: number;
+  /** Scenes rejected for contradicting a fact's direction (subset of rewritten). */
+  semanticRejected?: number;
+}
+
+// ── Cryptographic proof bundle ─────────────────────────────────────────────
+
+export interface ProofBundle {
+  version: 1;
+  /** Analysis engine that produced the story, e.g. "plotline@1.1.0". */
+  engine: string;
+  algorithm: "ed25519";
+  /** SHA-256 of the raw uploaded CSV bytes. */
+  csvSha256: string;
+  /** SHA-256 of the canonical JSON of the fact ledger. */
+  factsSha256: string;
+  /** SHA-256 of the canonical JSON of the story spec (minus this proof). */
+  storySha256: string;
+  /** Ed25519 public key, base64 SPKI DER. */
+  publicKey: string;
+  /** Ed25519 signature over the canonical proof payload, base64. */
+  signature: string;
+}
+
+// ── Independent verification ───────────────────────────────────────────────
+
+export type VerifyVerdict = "VERIFIED" | "TAMPERED" | "UNSUPPORTED_CLAIM" | "SOURCE_MISMATCH";
+
+export interface VerifyCheck {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface VerifyReport {
+  verdict: VerifyVerdict;
+  checks: VerifyCheck[];
+  /** Engine that performed this verification. */
+  engine: string;
+  storyId: string;
+  factsChecked: number;
+  claimsChecked: number;
 }
 
 export interface StorySpec {
@@ -151,6 +206,8 @@ export interface StorySpec {
   };
   facts: Fact[];
   scenes: Scene[];
+  /** Cryptographic evidence bundle — verify offline or via verify_story. */
+  proof?: ProofBundle;
 }
 
 export interface CreateStoryInput {

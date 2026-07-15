@@ -1,6 +1,7 @@
 import { parseCsv } from "./csv.js";
 import { extractFacts } from "./insights.js";
 import { buildNarrative } from "./narrative.js";
+import { buildProof, type ProofSigner } from "./proof.js";
 import { buildStoryHtml } from "./renderer.js";
 import type { CreateStoryInput, CreateStoryResult, StorySpec, ThemeName, Tone } from "./types.js";
 import { newStoryId, truncate } from "./util.js";
@@ -13,6 +14,10 @@ const TONES: Tone[] = ["documentary", "boardroom", "punchy"];
 export interface PipelineDeps {
   baseUrl: string;
   save: (spec: StorySpec, html: string) => void;
+  /** When present, stories carry a signed proof bundle. */
+  signer?: ProofSigner;
+  /** Engine identity embedded in proofs, e.g. "plotline@1.1.0". */
+  engine?: string;
 }
 
 /** The whole product in one function: CSV → facts → narrative → story. */
@@ -65,6 +70,10 @@ export async function createStory(input: CreateStoryInput, deps: PipelineDeps): 
     facts,
     scenes: narrative.scenes,
   };
+
+  if (deps.signer) {
+    spec.proof = buildProof(csv, spec, deps.signer, deps.engine ?? "plotline");
+  }
 
   const html = buildStoryHtml(spec, deps.baseUrl);
   deps.save(spec, html);

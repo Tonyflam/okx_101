@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { createHash } from "node:crypto";
 import { OKXFacilitatorClient } from "@okxweb3/x402-core";
 
 /**
@@ -181,7 +182,46 @@ export type SettlementOutcome = { ok: true; responseHeader: string } | { ok: fal
  * The requirements are rebuilt from the same challenge we issued, so the
  * facilitator checks the payment against exactly what was quoted.
  */
+// ── Replay protection: one X-PAYMENT payload settles exactly once ──────────
+// Concurrent duplicates share the same in-flight settlement promise (atomic
+// "settle once"); later duplicates within the TTL get the cached outcome
+// instead of triggering a second on-chain settlement.
+const REPLAY_TTL_MS = 10 * 60 * 1000;
+const REPLAY_MAX = 500;
+const replayCache = new Map<string, { at: number; result: Promise<SettlementOutcome> }>();
+
+function replayKey(paymentHeader: string, resourcePath: string): string {
+  return createHash("sha256").update(paymentHeader).update("|").update(resourcePath).digest("hex");
+}
+
+function pruneReplayCache(): void {
+  const now = Date.now();
+  for (const [k, v] of replayCache) {
+    if (now - v.at > REPLAY_TTL_MS) replayCache.delete(k);
+  }
+  while (replayCache.size > REPLAY_MAX) {
+    const oldest = replayCache.keys().next().value;
+    if (oldest === undefined) break;
+    replayCache.delete(oldest);
+  }
+}
+
 export async function settlePayment(
+  cfg: X402Config,
+  facilitator: FacilitatorLike | null,
+  paymentHeader: string,
+  resourcePath: string,
+): Promise<SettlementOutcome> {
+  const key = replayKey(paymentHeader, resourcePath);
+  const cached = replayCache.get(key);
+  if (cached) return cached.result;
+  const result = settlePaymentOnce(cfg, facilitator, paymentHeader, resourcePath);
+  replayCache.set(key, { at: Date.now(), result });
+  pruneReplayCache();
+  return result;
+}
+
+async function settlePaymentOnce(
   cfg: X402Config,
   facilitator: FacilitatorLike | null,
   paymentHeader: string,

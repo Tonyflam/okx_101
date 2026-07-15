@@ -396,12 +396,13 @@ async function aiNarrative(
   const draft = parseDraft(raw, sceneFacts.length);
   if (!draft) return null;
 
-  // ── Numeric audit: every number the AI wrote must exist in the ledger ────
-  const audit: NumericAudit = { checked: 0, verified: 0, rewritten: 0 };
-  const globalAllowed = globalWhitelist(allFacts, ctx);
+  // ── Semantic audit: every number AND every direction the AI wrote must ──
+  // ── be supported by the specific fact each scene is bound to. ──────────
+  const audit: NumericAudit = { checked: 0, verified: 0, rewritten: 0, semanticRejected: 0 };
+  const structural = structuralWhitelist(sceneFacts, allFacts.length, ctx);
 
   const scenes: Scene[] = [];
-  const heroOk = auditText(`${draft.title} ${draft.subtitle}`, globalAllowed, audit);
+  const heroOk = auditText(`${draft.title} ${draft.subtitle}`, structural, audit);
   scenes.push({
     kind: "hero",
     kicker: "A Plotline data story",
@@ -412,8 +413,8 @@ async function aiNarrative(
 
   sceneFacts.forEach((f, i) => {
     const d = draft.scenes[i]!;
-    const allowed = new Set([...factAllowedNumbers(f), ...globalAllowed]);
-    const ok = auditText(`${d.headline} ${d.body}`, allowed, audit);
+    const claim = auditClaimText(f, `${d.headline} ${d.body}`, audit);
+    const ok = claim.ok;
     const detScene = det.scenes[i + 1] as InsightScene; // same order, offset by hero
     scenes.push({
       kind: "insight",
@@ -425,7 +426,7 @@ async function aiNarrative(
     if (!ok) audit.rewritten++;
   });
 
-  const closingOk = auditText(`${draft.closingHeadline} ${draft.closingBody}`, globalAllowed, audit);
+  const closingOk = auditText(`${draft.closingHeadline} ${draft.closingBody}`, structural, audit);
   const detClosing = det.scenes[det.scenes.length - 1] as Extract<Scene, { kind: "closing" }>;
   scenes.push({
     kind: "closing",
@@ -469,19 +470,31 @@ function parseDraft(raw: string, expectedScenes: number): LlmDraft | null {
   }
 }
 
-// ── Numeric audit machinery ────────────────────────────────────────────────
+// ── Numeric + semantic audit machinery ──────────────────────────────────────
 
-/** Numbers always allowed: small rhetorical ints, plausible years. */
-function globalWhitelist(facts: Fact[], ctx: NarrativeContext): Set<number> {
-  const s = new Set<number>();
-  for (let i = 0; i <= 12; i++) s.add(i);
-  for (let y = 1990; y <= 2035; y++) s.add(y);
+/**
+ * Structural numbers allowed in hero/closing prose: tiny rhetorical ints,
+ * plausible years, the row/fact counts, and the numbers of the facts that
+ * actually appear in the story. NOT the whole ledger — a number from an
+ * unused fact cannot leak into the title.
+ */
+function structuralWhitelist(sceneFacts: Fact[], factCount: number, ctx: NarrativeContext): Set<number> {
+  const s = smallStructural();
   s.add(ctx.rowCount);
-  for (const f of facts) for (const v of Object.values(f.values)) addForms(s, v);
+  s.add(factCount);
+  for (const f of sceneFacts) for (const v of factAllowedNumbers(f)) s.add(v);
   return s;
 }
 
-function factAllowedNumbers(f: Fact): Set<number> {
+/** Tiny rhetorical ints + plausible years. (The old 0–12 freebie is gone —
+ * "seven straight quarters" must now be backed by the bound fact.) */
+function smallStructural(): Set<number> {
+  const s = new Set<number>([0, 1, 2, 3]);
+  for (let y = 1990; y <= 2035; y++) s.add(y);
+  return s;
+}
+
+export function factAllowedNumbers(f: Fact): Set<number> {
   const s = new Set<number>();
   for (const v of Object.values(f.values)) addForms(s, v);
   // Numbers appearing in the canonical statement (they are formatted).
@@ -533,6 +546,79 @@ export function auditText(text: string, allowed: Set<number>, audit: NumericAudi
     else ok = false;
   }
   return ok;
+}
+
+// ── Semantic claim audit (numbers + direction, bound to ONE fact) ─────────
+
+const UP_WORDS =
+  /\b(rise|rises|rose|risen|rising|climb(?:s|ed|ing)?|grew|grow(?:s|ing|th)?|increas(?:e|es|ed|ing)|gain(?:s|ed)?|jump(?:s|ed|ing)?|surg(?:e|es|ed|ing)|rall(?:y|ies|ied)|soar(?:s|ed|ing)?|accelerat(?:e|es|ed|ing)|upward)\b/i;
+const DOWN_WORDS =
+  /\b(fall|falls|fell|fallen|falling|drop(?:s|ped|ping)?|declin(?:e|es|ed|ing)|decreas(?:e|es|ed|ing)|shrink(?:s|ing)?|shrank|shrunk|plung(?:e|es|ed|ing)|slid|slide(?:s)?|sliding|sank|sink(?:s|ing)?|slump(?:s|ed|ing)?|downward|los(?:t|ing|s)\b|deteriorat(?:e|es|ed|ing))\b/i;
+const NEGATIVE_CORR = /\b(invers(?:e|ely)|negative(?:ly)?|opposite|anti-?correlat)/i;
+const POSITIVE_CORR = /\b(positive(?:ly)?|lockstep|in\s+tandem)\b/i;
+
+/**
+ * Direction of a fact, derived from its computed values — never from a
+ * mutable label, so a tampered spec cannot lie about it.
+ */
+export function factDirection(f: Fact): "up" | "down" | "flat" | null {
+  switch (f.kind) {
+    case "trend":
+    case "delta":
+    case "streak": {
+      const pct = f.values.changePct;
+      if (typeof pct !== "number") return null;
+      return pct > 3 ? "up" : pct < -3 ? "down" : "flat";
+    }
+    case "changepoint": {
+      const shift = f.values.shiftPct ?? (typeof f.values.after === "number" && typeof f.values.before === "number" ? f.values.after - f.values.before : undefined);
+      if (typeof shift !== "number") return null;
+      return shift > 0 ? "up" : shift < 0 ? "down" : "flat";
+    }
+    default:
+      return null;
+  }
+}
+
+export interface ClaimAudit {
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * Audit prose against the ONE fact it claims to describe:
+ * 1. every number must come from that fact (plus tiny structural ints/years);
+ * 2. the direction language must not contradict the fact's computed direction;
+ * 3. correlation sign words must match the computed r.
+ * Used at generation time (AI scenes) and at verification time (verify_story).
+ */
+export function auditClaimText(f: Fact, text: string, audit?: NumericAudit): ClaimAudit {
+  const counters: NumericAudit = audit ?? { checked: 0, verified: 0, rewritten: 0 };
+  const allowed = new Set([...factAllowedNumbers(f), ...smallStructural()]);
+  const numbersOk = auditText(text, allowed, counters);
+  if (!numbersOk) {
+    return { ok: false, reason: `contains a number not present in fact ${f.id} (${f.kind})` };
+  }
+  const dir = factDirection(f);
+  if (dir === "up" && DOWN_WORDS.test(text) && !UP_WORDS.test(text)) {
+    if (audit) audit.semanticRejected = (audit.semanticRejected ?? 0) + 1;
+    return { ok: false, reason: `claims a decline but fact ${f.id} measured an increase` };
+  }
+  if (dir === "down" && UP_WORDS.test(text) && !DOWN_WORDS.test(text)) {
+    if (audit) audit.semanticRejected = (audit.semanticRejected ?? 0) + 1;
+    return { ok: false, reason: `claims an increase but fact ${f.id} measured a decline` };
+  }
+  if (f.kind === "correlation" && typeof f.values.r === "number") {
+    if (f.values.r > 0 && NEGATIVE_CORR.test(text)) {
+      if (audit) audit.semanticRejected = (audit.semanticRejected ?? 0) + 1;
+      return { ok: false, reason: `claims an inverse relationship but fact ${f.id} computed r=${f.values.r} (positive)` };
+    }
+    if (f.values.r < 0 && POSITIVE_CORR.test(text)) {
+      if (audit) audit.semanticRejected = (audit.semanticRejected ?? 0) + 1;
+      return { ok: false, reason: `claims a positive relationship but fact ${f.id} computed r=${f.values.r} (inverse)` };
+    }
+  }
+  return { ok: true };
 }
 
 function round1(n: number): number {

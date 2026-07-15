@@ -1,7 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { analyzeCsv, createStory, UserError } from "./pipeline.js";
+import type { ProofSigner } from "./proof.js";
 import type { StoryStore } from "./store.js";
+import { verifyStory } from "./verify.js";
+import type { StorySpec } from "./types.js";
 import type { X402Config } from "./x402.js";
 
 export interface McpDeps {
@@ -9,23 +12,31 @@ export interface McpDeps {
   store: StoryStore;
   x402: X402Config;
   version: string;
+  signer?: ProofSigner;
 }
 
-const INSTRUCTIONS = `Plotline is the storytelling engine of the agent economy: it turns any CSV into a
-cinematic, scroll-animated data story a human will actually read — with every number
-machine-verified.
+const INSTRUCTIONS = `Plotline turns any CSV into a cinematic, scroll-animated data story where every
+claim — not merely every number — is independently reproducible and cryptographically
+verifiable.
 
-Honesty model (why agents can trust the output):
-1. A deterministic statistics engine (regression, MAD outliers, changepoint detection,
-   Pearson correlation, concentration analysis) computes a "fact ledger" from the raw CSV.
-2. The narrative layer writes prose around those facts ONLY. Every number in AI-written
-   text is audited against the fact ledger; scenes that fail the audit are rewritten
-   deterministically. Numbers come from code, words follow the numbers — never the reverse.
-3. Each story page ships with its full fact ledger appendix so readers can verify claims.
+Trust model (why agents can rely on the output):
+1. A deterministic statistics engine (regression with confidence intervals, MAD
+   outliers, changepoint detection with Welch significance tests, Pearson correlation
+   with p-values, concentration analysis) computes a "fact ledger" from the raw CSV.
+   Facts carry row-level provenance (which source rows produced them).
+2. The narrative layer writes prose around those facts ONLY. Every number in
+   AI-written text is audited against the specific fact each scene is bound to, and
+   direction language (rose/fell, positive/inverse) is checked against the computed
+   sign. Scenes that fail are rewritten deterministically.
+3. Every story embeds a signed proof bundle: SHA-256 of the dataset, the fact ledger
+   and the story spec, signed with the server's Ed25519 key — verifiable offline.
+4. verify_story re-runs the ENTIRE analysis from the raw CSV and returns
+   VERIFIED / TAMPERED / UNSUPPORTED_CLAIM / SOURCE_MISMATCH — so any agent can
+   independently audit any Plotline story (or catch a forged one).
 
-Typical flow: call create_story with raw CSV text (and optionally the question the story
-should answer). You get back a shareable URL to a self-contained scrollytelling page,
-plus the story metadata. Use analyze_csv when you only need the ranked facts as JSON.
+Typical flow: call create_story with raw CSV text. You get a shareable URL to a
+self-contained scrollytelling page plus metadata. Use analyze_csv for facts-only JSON,
+and verify_story to audit an existing story against its source data.
 CSV up to 2 MB / 20,000 rows. No signup, no API key.`;
 
 export function createMcpServer(deps: McpDeps): McpServer {
@@ -70,7 +81,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
             theme: args.theme,
             datasetName: args.dataset_name,
           },
-          { baseUrl: deps.baseUrl, save: (spec, html) => deps.store.save(spec, html) },
+          { baseUrl: deps.baseUrl, save: (spec, html) => deps.store.save(spec, html), signer: deps.signer, engine: `plotline@${deps.version}` },
         );
         const s = result.spec;
         const audit = s.numericAudit
@@ -210,6 +221,70 @@ export function createMcpServer(deps: McpDeps): McpServer {
           factCount: spec.facts.length,
         },
       };
+    },
+  );
+
+  server.registerTool(
+    "verify_story",
+    {
+      title: "Independently verify a story against its source data",
+      description:
+        "Re-run Plotline's entire deterministic analysis on the original CSV and audit an existing story against it. Checks the signed proof bundle (SHA-256 + Ed25519), recomputes every fact, and validates every scene claim (numbers AND direction) against its bound fact. Returns VERIFIED, TAMPERED (facts/spec altered), UNSUPPORTED_CLAIM (prose not backed by facts), or SOURCE_MISMATCH (wrong dataset). Pass a story_id for a story on this server, or spec_json for any Plotline story spec — including one downloaded from elsewhere.",
+      inputSchema: {
+        csv: z.string().min(1).describe("The original raw CSV the story claims to be built from."),
+        story_id: z.string().min(4).max(24).optional().describe("ID of a story on this server."),
+        spec_json: z.string().optional().describe("Alternatively: a full StorySpec JSON (e.g. the downloaded /story/{id}.json)."),
+      },
+      outputSchema: {
+        verdict: z.enum(["VERIFIED", "TAMPERED", "UNSUPPORTED_CLAIM", "SOURCE_MISMATCH"]),
+        storyId: z.string(),
+        factsChecked: z.number(),
+        claimsChecked: z.number(),
+        checks: z.array(z.object({ name: z.string(), ok: z.boolean(), detail: z.string() })),
+        engine: z.string(),
+      },
+    },
+    async (args) => {
+      try {
+        let spec: StorySpec | null = null;
+        if (args.story_id) {
+          spec = deps.store.getSpec(args.story_id.trim());
+          if (!spec) throw new UserError(`No story found with id \`${args.story_id.trim()}\`.`);
+        } else if (args.spec_json) {
+          try {
+            spec = JSON.parse(args.spec_json) as StorySpec;
+          } catch {
+            throw new UserError("spec_json is not valid JSON.");
+          }
+          if (!spec || !Array.isArray(spec.facts) || !Array.isArray(spec.scenes)) {
+            throw new UserError("spec_json does not look like a Plotline StorySpec (needs facts[] and scenes[]).");
+          }
+        } else {
+          throw new UserError("Provide either story_id or spec_json.");
+        }
+        const report = verifyStory(args.csv, spec, `plotline@${deps.version}`);
+        const icon = report.verdict === "VERIFIED" ? "✅" : "❌";
+        const text = [
+          `${icon} **${report.verdict}** — story \`${report.storyId}\``,
+          ``,
+          ...report.checks.map((c) => `- ${c.ok ? "✓" : "✗"} **${c.name}**: ${c.detail}`),
+          ``,
+          `${report.factsChecked} facts recomputed · ${report.claimsChecked} scene claims audited · ${report.engine}`,
+        ].join("\n");
+        return {
+          content: [{ type: "text", text }],
+          structuredContent: {
+            verdict: report.verdict,
+            storyId: report.storyId,
+            factsChecked: report.factsChecked,
+            claimsChecked: report.claimsChecked,
+            checks: report.checks,
+            engine: report.engine,
+          },
+        };
+      } catch (err) {
+        return toolError(err);
+      }
     },
   );
 

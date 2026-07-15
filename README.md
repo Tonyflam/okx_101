@@ -1,13 +1,17 @@
 # Plotline
 
-**The storytelling engine of the agent economy.**
+**Verifiable data stories for the agent economy.**
 
-Turn any CSV into a cinematic, scroll-animated data story — with every number machine-verified.
+Turn any CSV into a cinematic, scroll-animated data story where **every claim — not merely every number — is independently reproducible and cryptographically verifiable**.
 
 ```
 POST a CSV  →  deterministic stats engine computes a fact ledger
-            →  narrative written around ONLY those facts (numeric-audited)
-            →  a self-contained scrollytelling page you can share anywhere
+            →  (CIs, p-values, row-level provenance on every fact)
+            →  narrative bound scene-by-scene to specific facts
+            →  (numbers AND direction audited per scene)
+            →  signed proof bundle (SHA-256 × 3 + Ed25519)
+            →  a self-contained scrollytelling page — and a verify_story
+               tool any agent can call to audit it (or catch a forgery)
 ```
 
 Built for the **OKX.AI Genesis Hackathon** as an Agentic Service Provider (ASP): MCP-native, x402-payable (USDT0 on OKX X Layer), zero signup.
@@ -20,11 +24,12 @@ Agents are getting very good at *fetching* data and very confident at *misquotin
 
 **Plotline inverts the pipeline:**
 
-1. **Facts before prose.** A deterministic TypeScript statistics engine runs first: OLS regression trends, binary-segmentation changepoint detection, MAD outliers, Pearson correlations, streaks, seasonality, category leaders, concentration. Output: a ranked, immutable **fact ledger**.
-2. **The numeric audit.** The narrative layer (LLM, optional) writes a story arc around those facts — then *every number* in its prose is extracted and checked against the ledger (0.05 absolute / 1.5 % relative tolerance). Any scene that fails is rewritten by the deterministic narrator. If no LLM key is configured, the deterministic narrator writes the whole story.
-3. **Show your work.** Every story page ends with its fact ledger appendix: each claim, its computed value, and the method used.
+1. **Facts before prose.** A deterministic TypeScript statistics engine runs first: OLS regression trends **with 95% confidence intervals and p-values**, binary-segmentation changepoint detection **with Welch significance tests**, MAD outliers, Pearson correlations **with significance**, streaks, seasonality, category leaders, concentration. Every fact carries **row-level provenance** — the exact source rows that produced it. Output: a ranked, immutable **fact ledger**.
+2. **The semantic claim audit.** The narrative layer (LLM, optional) writes a story arc — then every scene is audited against the *one fact it is bound to*: every number must come from that fact (the global whitelist and the 0–12 small-integer freebie are gone), and **direction language is checked against the computed sign** — "revenue fell 20%" cannot survive when the fact measured +20%. Failing scenes are rewritten deterministically.
+3. **Signed evidence.** Every story embeds a proof bundle: SHA-256 of the raw dataset, the fact ledger, and the story spec, signed with the server's Ed25519 key. Verifiable offline against `GET /api/proof-key`.
+4. **Independent verification.** `verify_story` (MCP tool + `POST /api/verify`) re-runs the ENTIRE analysis from the raw CSV and returns **`VERIFIED` / `TAMPERED` / `UNSUPPORTED_CLAIM` / `SOURCE_MISMATCH`** — reversed trends, swapped numbers, invented percentages, doctored facts and swapped datasets are all caught (see the adversarial test suite).
 
-> Numbers come from code. Words follow the numbers. Never the reverse.
+> Numbers come from code. Words follow the numbers. Never the reverse — and now you don't have to take our word for it.
 
 ## What you get
 
@@ -33,8 +38,8 @@ A single shareable URL to a **fully self-contained HTML page** (no CDNs, no font
 - Hero scene with an animated count-up stat
 - Scroll-triggered scenes: charts that draw themselves (line + trend, bar, scatter + fit, donut), alternating layout
 - Three themes — `midnight` (cinematic), `paper` (editorial serif), `neon` (terminal) — and three tones — `documentary`, `boardroom`, `punchy`
-- The fact-ledger appendix and an audit line in the footer
-- Machine-readable spec at `/story/{id}.json`
+- The fact-ledger appendix with **confidence badges** (high/medium/low/exact), provenance counts, and the **cryptographic proof block**
+- Machine-readable spec (facts, scenes, audit, proof bundle) at `/story/{id}.json`
 
 ## Quickstart
 
@@ -59,8 +64,11 @@ Optional env (see `.env.example`):
 | `DATA_DIR` | `./data` | Story storage (JSON + HTML files) |
 
 ```bash
-npm test             # 43 tests: csv, stats, narrative audit, pipeline, XSS,
-                     # x402 challenge shape, A2MCP self-check compliance
+npm test             # 66 tests: csv, stats (incl. t-dist inference), semantic
+                     # claim audit, pipeline, XSS, adversarial forgeries
+                     # (reversed trend / swapped number / tampered fact /
+                     # doctored CSV / forged signature), x402 challenge shape,
+                     # settlement + replay protection, A2MCP self-check
 npm run typecheck    # strict TS, noUncheckedIndexedAccess
 npm run build && npm start
 ```
@@ -81,6 +89,7 @@ Streamable HTTP endpoint at **`POST /mcp`** — stateless, no session required.
 |---|---|
 | `create_story` | CSV (+ optional `question`, `tone`, `theme`, `dataset_name`) → story URL + metadata + audit report |
 | `analyze_csv` | CSV → ranked fact ledger as structured JSON (no page rendered) |
+| `verify_story` | CSV + story (`story_id` or `spec_json`) → recompute everything → `VERIFIED` / `TAMPERED` / `UNSUPPORTED_CLAIM` / `SOURCE_MISMATCH` |
 | `get_story` | Look up an existing story by ID |
 | `list_themes` | Visual themes and narrative tones |
 | `get_pricing` | Live quota + x402 payment details |
@@ -98,8 +107,10 @@ curl -X POST https://YOUR-DEPLOYMENT/api/story \
 | Route | Method | Description |
 |---|---|---|
 | `/api/story` | POST | Create a story. Body: `{csv, question?, tone?, theme?, datasetName?}` |
+| `/api/verify` | POST | Independent verification. Body: `{csv, storyId}` or `{csv, spec}` → verdict + per-layer checks. **Always free.** |
+| `/api/proof-key` | GET | The server's Ed25519 public key — pin it to verify proof bundles offline |
 | `/story/{id}` | GET | The story page (HTML) |
-| `/story/{id}.json` | GET | The full StorySpec (facts, scenes, audit) |
+| `/story/{id}.json` | GET | The full StorySpec (facts, scenes, audit, proof) |
 | `/api/health` | GET | Health + story count + payment mode |
 | `/x402/info` | GET | Machine-readable pricing |
 | `/llms.txt` | GET | Agent-discovery description |

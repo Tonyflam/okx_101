@@ -109,13 +109,21 @@ function renderLedger(spec: StorySpec): string {
       (f) => `<tr id="${escapeAttr(f.id)}">
   <td class="lid">${escapeHtml(f.id)}</td>
   <td class="lstat">${escapeHtml(f.statement)}</td>
-  <td class="lev">${escapeHtml(f.evidence)}</td>
+  <td class="lev">${escapeHtml(f.evidence)}${f.sourceRows?.length ? `<span class="lrows"> · from ${f.sourceRows.length} source row${f.sourceRows.length === 1 ? "" : "s"}</span>` : ""}</td>
+  <td class="lconf">${f.confidence ? `<span class="conf conf-${f.confidence.level}">${f.confidence.level}</span><span class="conf-note">${escapeHtml(f.confidence.note)}</span>` : `<span class="conf conf-exact">exact</span>`}</td>
 </tr>`,
     )
     .join("\n");
   const cols = spec.dataset.columns.map((c) => `${escapeHtml(c.name)} <em>(${c.type})</em>`).join(" · ");
   const notes = spec.dataset.notes.length
     ? `<p class="ledger-notes">Notes: ${spec.dataset.notes.map(escapeHtml).join(" ")}</p>`
+    : "";
+  const proof = spec.proof
+    ? `<div class="proof">
+    <h4>Cryptographic proof</h4>
+    <p>This story is signed. Dataset SHA-256 <code>${escapeHtml(spec.proof.csvSha256.slice(0, 20))}…</code> · ledger <code>${escapeHtml(spec.proof.factsSha256.slice(0, 20))}…</code> · story <code>${escapeHtml(spec.proof.storySha256.slice(0, 20))}…</code> · Ed25519 by <code>${escapeHtml(spec.proof.engine)}</code>.</p>
+    <p>Any agent can re-verify: <code>POST /api/verify {"csv": …, "storyId": "${escapeHtml(spec.id)}"}</code> recomputes every fact and audits every claim → VERIFIED / TAMPERED / UNSUPPORTED_CLAIM / SOURCE_MISMATCH.</p>
+  </div>`
     : "";
   return `<section class="ledger">
   <div class="ledger-inner">
@@ -124,11 +132,12 @@ function renderLedger(spec: StorySpec): string {
     <p class="ledger-meta">${escapeHtml(spec.dataset.name)} · ${spec.dataset.rowCount} rows · columns: ${cols}</p>
     ${notes}
     <table>
-      <thead><tr><th>ID</th><th>Fact</th><th>Method</th></tr></thead>
+      <thead><tr><th>ID</th><th>Fact</th><th>Method &amp; provenance</th><th>Confidence</th></tr></thead>
       <tbody>
 ${rows}
       </tbody>
     </table>
+    ${proof}
   </div>
 </section>`;
 }
@@ -237,6 +246,17 @@ h2{font-family:var(--display);font-size:clamp(1.5rem,3.4vw,2.3rem);line-height:1
 .ledger td{padding:12px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 .ledger .lid{color:var(--accent);font-weight:700;white-space:nowrap}
 .ledger .lev{color:var(--muted);font-size:.8rem;max-width:260px}
+.ledger .lrows{opacity:.75}
+.ledger .lconf{font-size:.78rem;max-width:220px}
+.conf{display:inline-block;padding:2px 8px;border-radius:999px;font-weight:700;font-size:.7rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
+.conf-high{background:rgba(74,222,128,.16);color:#4ade80}
+.conf-medium{background:rgba(250,204,21,.15);color:#facc15}
+.conf-low{background:rgba(248,113,113,.15);color:#f87171}
+.conf-exact{background:rgba(148,163,184,.15);color:var(--muted)}
+.conf-note{display:block;color:var(--muted);margin-top:2px}
+.proof{margin-top:28px;padding:18px 20px;border:1px dashed var(--muted);border-radius:12px;font-size:.82rem;color:var(--muted)}
+.proof h4{margin:0 0 8px;color:var(--fg);font-size:.9rem}
+.proof code{font-size:.75rem;word-break:break-all}
 tr:target td{background:var(--card)}
 
 .site-footer{padding:44px 24px;border-top:1px solid var(--line)}

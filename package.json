@@ -1,6 +1,6 @@
 {
   "name": "plotline",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Plotline — the storytelling engine of the agent economy. Turn any CSV into a cinematic, fact-verified, animated data story. An A2MCP ASP for OKX.AI.",
   "type": "module",
   "license": "MIT",
