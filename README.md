@@ -112,7 +112,7 @@ Plotline implements both A2MCP endpoint types exactly as the marketplace validat
 
 - **Free mode (default):** every call returns **HTTP 200 with the result directly**. Story creation is metered at `FREE_DAILY` per client per UTC day (`X-Free-Calls-Remaining` header); over quota returns `429` — never a misleading `402`.
 - **Paid mode (`X402_MODE=challenge`):** **every unpaid call** returns `402` with a spec-correct **x402 v2 challenge** — base64 JSON in the `PAYMENT-REQUIRED` header (that header is what the marketplace validates), mirrored in the body: scheme `exact`, network `eip155:196` (X Layer), asset USDT0 (`0x779d…3736`, 6 decimals, `amount` in minimal units), `payTo` = your address, `maxTimeoutSeconds: 300`.
-- **Settlement integration point:** `src/x402.ts` marks exactly where `@okxweb3/x402-express` verification/settlement drops in with merchant credentials. Until then, the server declines unverifiable payments honestly rather than pretending to settle.
+- **Settlement (implemented):** calls carrying an `X-PAYMENT` header are verified and settled through the **official OKX facilitator** (`@okxweb3/x402-core` `OKXFacilitatorClient`, HMAC-signed `/api/v6/pay/x402/verify` + `/settle`, `syncSettle`). Set `OKX_API_KEY` / `OKX_SECRET_KEY` / `OKX_PASSPHRASE` from the [OKX Developer Portal](https://web3.okx.com/onchainos/dev-portal). On success the response carries a `PAYMENT-RESPONSE` receipt header (base64 settle result incl. tx hash); on failure the server re-issues the 402 challenge with an explicit `error` — it never pretends to settle.
 
 ## Architecture
 

@@ -75,6 +75,12 @@ Without keys the deterministic narrator runs — demo never breaks.
 Set `X402_MODE=challenge`, `X402_PAY_TO=<your X Layer address>`,
 `X402_PRICE_USD=0.20`. Every unpaid call then returns HTTP 402 with a
 spec-correct x402 v2 challenge in the `PAYMENT-REQUIRED` header — the exact
-form the marketplace self-check validates. Real settlement: integrate
-`@okxweb3/x402-express` at the marked point in `src/x402.ts` with your
-merchant credentials.
+form the marketplace self-check validates.
+
+For real settlement, create an API key in the
+[OKX Developer Portal](https://web3.okx.com/onchainos/dev-portal)
+(project → API key) and set `OKX_API_KEY`, `OKX_SECRET_KEY`,
+`OKX_PASSPHRASE` on the deployment. Paid calls carrying `X-PAYMENT` are then
+verified + settled through the official OKX facilitator and receive a
+`PAYMENT-RESPONSE` receipt header. Without credentials, paid mode stays
+honest: it re-issues the 402 challenge with an explanatory `error`.

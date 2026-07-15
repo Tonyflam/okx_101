@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { OKXFacilitatorClient } from "@okxweb3/x402-core";
 
 /**
  * x402 monetization layer (OKX X Layer / USDT0).
@@ -7,14 +8,18 @@ import type { NextFunction, Request, Response } from "express";
  *  - "free"      → every call succeeds; a courtesy quota header shows remaining
  *                  free calls. This is the default so the ASP review and any
  *                  agent can always exercise the service end-to-end.
- *  - "challenge" → after FREE_DAILY calls per client per UTC day, respond with
- *                  HTTP 402 + a spec-correct x402 v2 challenge (base64 JSON in
- *                  the PAYMENT-REQUIRED header, mirrored in the body).
+ *  - "challenge" → after FREE_DAILY calls per day, respond with HTTP 402 + a
+ *                  spec-correct x402 v2 challenge (base64 JSON in the
+ *                  PAYMENT-REQUIRED response header, mirrored in the body).
  *
- * Settlement note: verifying X-PAYMENT payloads on-chain requires the OKX
- * payment SDK (@okxweb3/x402-express) with merchant credentials. The
- * `settle` hook below is the single integration point — drop the SDK
- * middleware in and flip X402_MODE=challenge to go fully paid.
+ * Settlement: when OKX Developer Portal credentials are configured
+ * (OKX_API_KEY / OKX_SECRET_KEY / OKX_PASSPHRASE from
+ * https://web3.okx.com/onchainos/dev-portal), X-PAYMENT payloads are verified
+ * and settled through the official OKX facilitator
+ * (/api/v6/pay/x402/verify + /settle, HMAC-signed — the same client the
+ * @okxweb3/x402-express middleware uses). Successful settlements attach the
+ * standard PAYMENT-RESPONSE header. Without credentials, paid mode re-issues
+ * the challenge with an explicit error — we never pretend to settle.
  */
 
 // USDT0 on OKX X Layer mainnet (eip155:196), 6 decimals.
@@ -95,6 +100,7 @@ export interface X402Challenge {
   x402Version: 2;
   resource: { url: string; description: string; mimeType: string };
   accepts: PaymentAccept[];
+  error?: string;
 }
 
 /**
@@ -134,6 +140,83 @@ export function send402(res: Response, challenge: X402Challenge): void {
   res.status(402).json(challenge);
 }
 
+// ── Settlement via the official OKX facilitator ─────────────────────────────
+
+/** Minimal facilitator surface (matches OKXFacilitatorClient; injectable for tests). */
+export interface FacilitatorLike {
+  verify(
+    payload: unknown,
+    requirements: unknown,
+  ): Promise<{ isValid: boolean; invalidReason?: string; payer?: string }>;
+  settle(
+    payload: unknown,
+    requirements: unknown,
+  ): Promise<{ success: boolean; transaction?: string; network?: string; payer?: string; errorReason?: string }>;
+}
+
+/**
+ * Build the OKX facilitator client from Developer Portal credentials
+ * (https://web3.okx.com/onchainos/dev-portal → create project → API key).
+ * Returns null when credentials are absent — paid mode then declines honestly.
+ */
+export function facilitatorFromEnv(): FacilitatorLike | null {
+  const apiKey = process.env.OKX_API_KEY;
+  const secretKey = process.env.OKX_SECRET_KEY ?? process.env.OKX_API_SECRET;
+  const passphrase = process.env.OKX_PASSPHRASE ?? process.env.OKX_API_PASSPHRASE;
+  if (!apiKey || !secretKey || !passphrase) return null;
+  // syncSettle: facilitator waits for on-chain confirmation before responding,
+  // so a 200 from us always means the payment actually landed.
+  return new OKXFacilitatorClient({
+    apiKey,
+    secretKey,
+    passphrase,
+    syncSettle: true,
+  }) as unknown as FacilitatorLike;
+}
+
+export type SettlementOutcome = { ok: true; responseHeader: string } | { ok: false; reason: string };
+
+/**
+ * Verify + settle an X-PAYMENT header against this resource's requirements.
+ * The requirements are rebuilt from the same challenge we issued, so the
+ * facilitator checks the payment against exactly what was quoted.
+ */
+export async function settlePayment(
+  cfg: X402Config,
+  facilitator: FacilitatorLike | null,
+  paymentHeader: string,
+  resourcePath: string,
+): Promise<SettlementOutcome> {
+  if (!facilitator) {
+    return {
+      ok: false,
+      reason:
+        "Payment settlement is not enabled on this deployment: the operator has not configured OKX Developer Portal API credentials (OKX_API_KEY / OKX_SECRET_KEY / OKX_PASSPHRASE).",
+    };
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(Buffer.from(paymentHeader, "base64").toString("utf8"));
+  } catch {
+    return { ok: false, reason: "Malformed X-PAYMENT header: expected base64-encoded JSON payment payload." };
+  }
+  const requirements = buildChallenge(cfg, resourcePath).accepts[0];
+  try {
+    const verdict = await facilitator.verify(payload, requirements);
+    if (!verdict.isValid) {
+      return { ok: false, reason: `Payment verification failed: ${verdict.invalidReason ?? "invalid payment"}.` };
+    }
+    const settled = await facilitator.settle(payload, requirements);
+    if (!settled.success) {
+      return { ok: false, reason: `Payment settlement failed: ${settled.errorReason ?? "settlement declined"}.` };
+    }
+    return { ok: true, responseHeader: Buffer.from(JSON.stringify(settled), "utf8").toString("base64") };
+  } catch (err) {
+    console.error("[x402] facilitator error:", err);
+    return { ok: false, reason: "Payment processing error while contacting the OKX facilitator. Please retry." };
+  }
+}
+
 /**
  * Express middleware guarding story-creation endpoints.
  *
@@ -142,10 +225,11 @@ export function send402(res: Response, challenge: X402Challenge): void {
  * would misrepresent the service as paid).
  *
  * Challenge mode (A2MCP "x402 pay-per-call endpoint"): every call without a
- * valid payment gets the standard 402 + PAYMENT-REQUIRED challenge; after
- * payment the request is replayed with X-PAYMENT and proceeds.
+ * payment gets the standard 402 + PAYMENT-REQUIRED challenge; calls carrying
+ * X-PAYMENT are verified + settled through the OKX facilitator and proceed
+ * with a PAYMENT-RESPONSE header on success.
  */
-export function x402Guard(cfg: X402Config, meter: UsageMeter) {
+export function x402Guard(cfg: X402Config, meter: UsageMeter, facilitator: FacilitatorLike | null) {
   return (req: Request, res: Response, next: NextFunction): void => {
     res.setHeader("X-Payment-Mode", cfg.mode);
 
@@ -170,20 +254,26 @@ export function x402Guard(cfg: X402Config, meter: UsageMeter) {
       return;
     }
 
-    // Payment provided — the OKX Payment SDK settlement integration point.
-    // In production wire @okxweb3/x402-express here to verify + settle
-    // (EIP-3009 signature, amount/nonce/validity, replay protection), then
-    // `next()` on success. Without merchant credentials we cannot settle,
-    // so we re-issue the challenge rather than pretend to accept payment.
-    send402(res, buildChallenge(cfg, req.path));
+    // Payment provided → verify + settle via the OKX facilitator.
+    void settlePayment(cfg, facilitator, paymentHeader, req.path).then((outcome) => {
+      if (outcome.ok) {
+        res.setHeader("PAYMENT-RESPONSE", outcome.responseHeader);
+        next();
+        return;
+      }
+      send402(res, { ...buildChallenge(cfg, req.path), error: outcome.reason });
+    });
   };
 }
 
 /** Public pricing/info document served at /x402/info. */
-export function x402Info(cfg: X402Config): Record<string, unknown> {
+export function x402Info(cfg: X402Config, settlementEnabled: boolean): Record<string, unknown> {
   return {
     service: "plotline",
     mode: cfg.mode,
+    settlement: settlementEnabled
+      ? "enabled — X-PAYMENT payloads are verified and settled via the OKX facilitator (syncSettle)"
+      : "disabled — operator has not configured OKX Developer Portal credentials",
     pricing: {
       model: cfg.mode === "free" ? "free (courtesy quota headers attached)" : "freemium",
       freeCallsPerDay: cfg.freeDaily,
@@ -203,7 +293,7 @@ export function x402Info(cfg: X402Config): Record<string, unknown> {
     },
     notes: [
       "Free mode: every call returns HTTP 200 with the result directly (A2MCP-compliant).",
-      "Paid mode: every unpaid call returns HTTP 402 with a standard x402 v2 challenge; pay, and the request is replayed.",
+      "Paid mode: every unpaid call returns HTTP 402 with a standard x402 v2 challenge; pay with X-PAYMENT and the call proceeds with a PAYMENT-RESPONSE receipt header.",
     ],
   };
 }

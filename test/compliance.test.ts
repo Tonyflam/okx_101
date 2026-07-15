@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { createApp } from "../src/app.js";
-import type { X402Config } from "../src/x402.js";
+import type { FacilitatorLike, X402Config } from "../src/x402.js";
 
 function cfg(mode: "free" | "challenge"): X402Config {
   return {
@@ -20,9 +20,9 @@ function cfg(mode: "free" | "challenge"): X402Config {
 
 const servers: Server[] = [];
 
-function listen(mode: "free" | "challenge"): Promise<string> {
+function listen(mode: "free" | "challenge", facilitator: FacilitatorLike | null = null): Promise<string> {
   const dataDir = mkdtempSync(join(tmpdir(), "plotline-test-"));
-  const app = createApp({ baseUrl: "http://unused.example", dataDir, x402: cfg(mode) });
+  const app = createApp({ baseUrl: "http://unused.example", dataDir, x402: cfg(mode), facilitator });
   return new Promise((resolvePromise) => {
     const server = app.listen(0, () => {
       servers.push(server);
@@ -180,4 +180,101 @@ test("paid mode REST: unpaid POST /api/story gets 402 + PAYMENT-REQUIRED", async
   assert.ok(header);
   const challenge = JSON.parse(Buffer.from(header, "base64").toString("utf8"));
   assert.equal(challenge.x402Version, 2);
+});
+
+// ── x402 settlement via the OKX facilitator ───────────────────────────────
+
+const PAYMENT = Buffer.from(
+  JSON.stringify({ x402Version: 2, scheme: "exact", network: "eip155:196", payload: { signature: "0xsig" } }),
+  "utf8",
+).toString("base64");
+
+function fakeFacilitator(overrides: Partial<FacilitatorLike> = {}): FacilitatorLike {
+  return {
+    verify: async () => ({ isValid: true, payer: "0xpayer" }),
+    settle: async () => ({ success: true, transaction: "0xtx", network: "eip155:196", payer: "0xpayer" }),
+    ...overrides,
+  };
+}
+
+test("paid + valid payment: MCP call settles and proceeds with PAYMENT-RESPONSE", async () => {
+  const base = await listen("challenge", fakeFacilitator());
+  const res = await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-PAYMENT": PAYMENT },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+  });
+  assert.equal(res.status, 200);
+  const receipt = res.headers.get("payment-response");
+  assert.ok(receipt);
+  const settled = JSON.parse(Buffer.from(receipt, "base64").toString("utf8"));
+  assert.equal(settled.success, true);
+  assert.equal(settled.transaction, "0xtx");
+});
+
+test("paid + rejected payment: 402 challenge with the verification reason", async () => {
+  const base = await listen(
+    "challenge",
+    fakeFacilitator({ verify: async () => ({ isValid: false, invalidReason: "insufficient_funds" }) }),
+  );
+  const res = await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-PAYMENT": PAYMENT },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+  });
+  assert.equal(res.status, 402);
+  const body = (await res.json()) as { error?: string };
+  assert.ok(body.error?.includes("insufficient_funds"));
+});
+
+test("paid + failed settlement: 402 challenge, never a silent success", async () => {
+  const base = await listen(
+    "challenge",
+    fakeFacilitator({ settle: async () => ({ success: false, errorReason: "settle_timeout" }) }),
+  );
+  const res = await fetch(`${base}/api/story`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-PAYMENT": PAYMENT },
+    body: JSON.stringify({ csv: "a,b\n1,2\n2,4\n3,6" }),
+  });
+  assert.equal(res.status, 402);
+  const body = (await res.json()) as { error?: string };
+  assert.ok(body.error?.includes("settle_timeout"));
+});
+
+test("paid + malformed X-PAYMENT: 402 with explicit error", async () => {
+  const base = await listen("challenge", fakeFacilitator());
+  const res = await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-PAYMENT": "not-base64-json!!!" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+  });
+  assert.equal(res.status, 402);
+  const body = (await res.json()) as { error?: string };
+  assert.ok(body.error?.includes("Malformed X-PAYMENT"));
+});
+
+test("paid + payment but no credentials configured: honest 402, not fake success", async () => {
+  const base = await listen("challenge", null);
+  const res = await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-PAYMENT": PAYMENT },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+  });
+  assert.equal(res.status, 402);
+  const body = (await res.json()) as { error?: string };
+  assert.ok(body.error?.includes("OKX Developer Portal"));
+});
+
+test("paid + valid payment REST: story is created and receipt attached", async () => {
+  const base = await listen("challenge", fakeFacilitator());
+  const res = await fetch(`${base}/api/story`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-PAYMENT": PAYMENT },
+    body: JSON.stringify({ csv: "month,revenue\n2024-01,100\n2024-02,130\n2024-03,170\n2024-04,220\n2024-05,290" }),
+  });
+  assert.equal(res.status, 200);
+  assert.ok(res.headers.get("payment-response"));
+  const body = (await res.json()) as { url: string };
+  assert.ok(body.url.includes("/story/"));
 });

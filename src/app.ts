@@ -6,7 +6,17 @@ import { createMcpServer } from "./mcp.js";
 import { createStory, UserError } from "./pipeline.js";
 import { StoryStore } from "./store.js";
 import { isValidStoryId } from "./util.js";
-import { UsageMeter, x402Guard, x402Info, buildChallenge, send402, type X402Config } from "./x402.js";
+import {
+  UsageMeter,
+  x402Guard,
+  x402Info,
+  buildChallenge,
+  send402,
+  settlePayment,
+  facilitatorFromEnv,
+  type FacilitatorLike,
+  type X402Config,
+} from "./x402.js";
 
 export const VERSION = "1.0.0";
 const ROOT = resolve(import.meta.dirname, "..");
@@ -15,14 +25,17 @@ export interface AppOptions {
   baseUrl: string;
   dataDir: string;
   x402: X402Config;
+  /** Payment facilitator; defaults to env-configured OKX client (or null). Injectable for tests. */
+  facilitator?: FacilitatorLike | null;
 }
 
 /** Build the fully-wired Express app (no listener) — testable in isolation. */
 export function createApp(opts: AppOptions): Express {
   const { baseUrl: BASE_URL, x402: x402cfg } = opts;
+  const facilitator = opts.facilitator !== undefined ? opts.facilitator : facilitatorFromEnv();
   const store = new StoryStore(opts.dataDir);
   const meter = new UsageMeter();
-  const guard = x402Guard(x402cfg, meter);
+  const guard = x402Guard(x402cfg, meter, facilitator);
 
   const app = express();
   app.disable("x-powered-by");
@@ -112,7 +125,7 @@ export function createApp(opts: AppOptions): Express {
   });
 
   app.get("/x402/info", (_req, res) => {
-    res.json(x402Info(x402cfg));
+    res.json(x402Info(x402cfg, facilitator !== null));
   });
 
   app.get("/llms.txt", (_req, res) => {
@@ -122,20 +135,36 @@ export function createApp(opts: AppOptions): Express {
   // ── MCP endpoint (Streamable HTTP, stateless) ────────────────────────────
   // A2MCP compliance layer, per the official self-check (`curl -i -X POST /mcp`):
   //   Free type  → HTTP 200 + result directly (never 406/400 on a bare probe)
-  //   Paid type  → HTTP 402 + PAYMENT-REQUIRED challenge on every unpaid call
+  //   Paid type  → HTTP 402 + PAYMENT-REQUIRED challenge on every unpaid call;
+  //                X-PAYMENT payloads are verified + settled via the OKX
+  //                facilitator before the call proceeds.
   const mcpCompliance = (req: Request, res: Response, next: NextFunction): void => {
     res.setHeader("X-Payment-Mode", x402cfg.mode);
 
-    // Paid mode: every call without a payment header gets the standard 402
-    // challenge (after payment, the request is replayed with X-PAYMENT).
+    // Paid mode: unpaid calls get the standard 402 challenge; paid calls are
+    // verified and settled before any MCP processing happens.
     if (x402cfg.mode === "challenge") {
       const pay = req.headers["x-payment"];
       if (typeof pay !== "string" || pay.length === 0) {
         send402(res, buildChallenge(x402cfg, "/mcp"));
         return;
       }
+      void settlePayment(x402cfg, facilitator, pay, "/mcp").then((outcome) => {
+        if (!outcome.ok) {
+          send402(res, { ...buildChallenge(x402cfg, "/mcp"), error: outcome.reason });
+          return;
+        }
+        res.setHeader("PAYMENT-RESPONSE", outcome.responseHeader);
+        proceed(req, res, next);
+      });
+      return;
     }
 
+    proceed(req, res, next);
+  };
+
+  // Everything after the payment gate: probe card, Accept normalization, quota.
+  const proceed = (req: Request, res: Response, next: NextFunction): void => {
     const body = req.body as unknown;
     const isBatch = Array.isArray(body) && body.length > 0;
     const isJsonRpc =
@@ -182,7 +211,7 @@ export function createApp(opts: AppOptions): Express {
 
     // Free mode: only story-creating calls consume quota; handshakes stay free.
     const rpc = body as { method?: string; params?: { name?: string } };
-    if (!isBatch && rpc.method === "tools/call" && rpc.params?.name === "create_story") {
+    if (!isBatch && rpc.method === "tools/call" && rpc.params?.name === "create_story" && x402cfg.mode === "free") {
       guard(req, res, next);
       return;
     }
