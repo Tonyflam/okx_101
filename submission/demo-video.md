@@ -124,20 +124,33 @@ Use these two files directly in CapCut. No text steps needed.
 
 ## 5. POST IT
 
-X post text (copy-paste):
+X post text (copy-paste exactly — 276/280 weighted chars, verified):
 
 ```
 AI agents lie about data. Plotline makes that structurally impossible.
 
-CSV in → cinematic data story out. Every fact computed, every claim signed,
-and ANY agent can re-verify the whole thing — six attacks, zero survived.
+CSV in → cinematic data story out. Every fact computed, every claim signed, and ANY agent can re-verify everything — six attacks, zero survived.
 
-Live on @OKX OKX.AI · free to call
-🔗 plotline-production-34e6.up.railway.app
-#OKXAI
+Live on #OKXAI — talk to it:
+🔗 https://www.okx.ai/agents/5106
 ```
 
-Attach `plotline-demo.mp4`, post, then paste the post URL into the hackathon Google form together with:
+Why this exact copy:
+- **https://www.okx.ai/agents/5106** is Plotline's live public profile on OKX.AI (verified 200) — one tap from the post straight to the agent. It displays as `okx.ai/agents/5106`, so the brand is visible too.
+- The required **#OKXAI** is woven into the sentence (still counts as the hashtag).
+- Don't write bare "OKX.AI" as text — X auto-links it and burns 23 characters.
+- Attach `plotline-demo.mp4` (media is free, doesn't count against 280).
+
+Reply to your own post right after (boosts reach, links don't crowd the main post):
+
+```
+See one for yourself — a 14-month startup CSV turned into this, in one tool call:
+https://plotline-production-34e6.up.railway.app/story/b1h4v9ta68
+
+Or search "Plotline" on OKX.AI. Free to call, MCP-native, x402-ready.
+```
+
+Then paste the post URL into the hackathon Google form together with:
 - Repo: github.com/Tonyflam/okx_101
 - Endpoint: https://plotline-production-34e6.up.railway.app/mcp
-- Agent: #5106 (Plotline)
+- Agent: #5106 (Plotline) — https://www.okx.ai/agents/5106

@@ -1,30 +1,29 @@
-# X Post + 90-second Demo
+# X Post (FINAL — superseded storyboard lives in demo-video.md)
 
-## The post (copy-paste; includes required #OKXAI)
+## The post (copy-paste exactly; 276/280 weighted chars, includes required #OKXAI and the direct agent link)
 
 ```
-Agents are great at fetching data — and confident at misquoting it.
+AI agents lie about data. Plotline makes that structurally impossible.
 
-So I built Plotline for #OKXAI: an ASP that turns any CSV into a cinematic,
-scroll-animated data story where every number is machine-verified.
+CSV in → cinematic data story out. Every fact computed, every claim signed, and ANY agent can re-verify everything — six attacks, zero survived.
 
-Numbers from code. Words from AI. Never the reverse.
-
-🎬 POST a CSV → get a scrollytelling page:
-• deterministic stats engine (trends, changepoints, outliers, correlations)
-• AI narration that passes a numeric audit against the fact ledger
-• failed scenes get rewritten deterministically — zero hallucinated figures
-• self-contained page: no trackers, no CDNs, ships with its fact ledger
-
-MCP-native · x402-payable (USDT0 on X Layer) · no signup
-
-Live on OKX.AI 👇 [demo video]
+Live on #OKXAI — talk to it:
+🔗 https://www.okx.ai/agents/5106
 ```
 
-(If thread space allows, reply 2: the story URL of a great-looking sample +
-"made from a 60-row CSV in one tool call.")
+Attach `plotline-demo.mp4`. Media doesn't count against the 280 limit.
+Do NOT add bare "OKX.AI" text — X auto-links it and burns 23 characters.
 
-## 90-second demo storyboard
+Reply 2 (post immediately after, links go here so they don't crowd the main post):
+
+```
+See one for yourself — a 14-month startup CSV turned into this, in one tool call:
+https://plotline-production-34e6.up.railway.app/story/b1h4v9ta68
+
+Or search "Plotline" on OKX.AI. Free to call, MCP-native, x402-ready.
+```
+
+## 90-second demo storyboard (OLD — use submission/demo-video.md instead)
 
 | t | Shot | Voiceover / caption |
 |---|---|---|

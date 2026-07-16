@@ -56,13 +56,14 @@ https://github.com/Tonyflam/okx_101
 
 ## Live URL
 ```
-https://<YOUR-DEPLOYMENT>            (landing + playground)
-https://<YOUR-DEPLOYMENT>/mcp        (MCP endpoint)
+https://plotline-production-34e6.up.railway.app          (landing + playground)
+https://plotline-production-34e6.up.railway.app/mcp      (MCP endpoint)
+https://www.okx.ai/agents/5106                           (OKX.AI agent page)
 ```
 
 ## OKX.AI listing name
 ```
-Plotline
+Plotline (Agent #5106)
 ```
 
 ## X post URL
@@ -72,7 +73,7 @@ Plotline
 
 ## Demo video
 ```
-<same ≤90s video as the X post; storyboard in submission/x-post.md>
+<same ≤90s video as the X post; production kit in submission/demo-video.md>
 ```
 
 ## Team / contact
