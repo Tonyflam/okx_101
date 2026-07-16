@@ -68,7 +68,7 @@ Plotline (Agent #5106)
 
 ## X post URL
 ```
-<paste after posting — must include #OKXAI and the ≤90s demo video>
+https://x.com/i_am_dflame/status/2077770359483375652
 ```
 
 ## Demo video
