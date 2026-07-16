@@ -47,30 +47,14 @@ Live story to scroll: **https://plotline-production-34e6.up.railway.app/story/b1
 
 ---
 
-## 2. IMAGES TO GENERATE (Nano Banana Pro) — 2 images, both 16:9
+## 2. IMAGES — DONE ✅
 
-> Rule: never ask the image model to draw text — text gets added later in CapCut.
+The generated images already have the text baked in at 1920×1080:
 
-**IMAGE-1 — The Hook (opening shot)**
-```
-Cinematic wide shot, 16:9. A sleek faceless humanoid AI robot in a dark
-conference room presents a large holographic line chart that glows amber.
-The chart is subtly wrong: the glowing line is dissolving into scattered,
-crumbling pixels and drifting embers at its end, hinting the data is fake.
-Moody midnight-blue color palette with a single warm amber light source,
-volumetric haze, shallow depth of field, photorealistic render, dramatic
-film lighting, no text, no words, no letters, no logos, no watermarks.
-```
+- **submission/assets/video-card-hook.png** — opening card ("AI agents lie about data." + the hallucinated stat tag)
+- **submission/assets/video-card-close.png** — closing card (Plotline lockup + URL + OKX.AI · Agent #5106 · #OKXAI)
 
-**IMAGE-2 — The Close (final card background)**
-```
-Minimalist abstract background, 16:9. A deep midnight-blue gradient canvas
-with a single elegant amber line rising from lower-left to upper-right,
-passing through a few small glowing nodes and ending in a bright four-point
-star flare. A faint teal secondary line follows below it. Subtle dot-grid
-texture, soft vignette, premium fintech aesthetic, clean negative space in
-the center for a title, no text, no words, no letters, no logos.
-```
+Use these two files directly in CapCut. No text steps needed.
 
 ---
 
@@ -115,11 +99,11 @@ the center for a title, no text, no words, no letters, no logos.
 ## 4. EDITING in CapCut — step by step (like you're 6)
 
 1. Download **CapCut** (free, desktop): capcut.com → open → **New project**.
-2. Click **Import** → select: `gauntlet.mp4`, `story.mp4`, `image1.png`, `image2.png`, `vo1.mp3` … `vo5.mp3`. 
+2. Click **Import** → select: `gauntlet.mp4`, `story.mp4`, `video-card-hook.png`, `video-card-close.png`, `vo1.mp3` … `vo5.mp3`. 
 3. **Set the canvas**: right side → Ratio → **16:9**.
 
 ### Build the timeline in this exact order
-4. **Drag IMAGE-1** to the timeline. Drag its right edge until it's **8 seconds** long.
+4. **Drag video-card-hook.png** to the timeline. Drag its right edge until it's **8 seconds** long.
    - With it selected → **Animation → In → "Zoom In (slow)"** so it slowly pushes in.
 5. **Drag vo1.mp3** to the audio track under it. Line its start up with 0:00.
 6. **Drag gauntlet.mp4** next on the video track. Find the moment the story URL prints (the "create" part) — **Split** (scissors icon) just before it, Split again after Act 1's banner appears, and DELETE everything before/after so you keep ~8s of "creating a story… URL… facts: 10". Place **vo2.mp3** under it.
@@ -127,9 +111,8 @@ the center for a title, no text, no words, no letters, no logos.
 8. **Drag the rest of gauntlet.mp4** (Acts 1→6 + final banner) next.
    - It's ~55s of footage but only has ~40s of room: select it → **Speed → 1.4x**. The typewriter pacing was designed to survive this.
    - Place **vo4.mp3** under it. Nudge the clip so "Flip the trend's direction — caught" lands roughly when Act 2's ❌ banner pops. Don't stress about perfect sync; close is fine.
-9. **Drag IMAGE-2** last, 10 seconds. Place **vo5.mp3** under it.
-   - Click **Text → Add text**: type `Plotline` big and centered (white, bold). Below it smaller: `plotline-production-34e6.up.railway.app` and on a third line: `OKX.AI · Agent #5106 · #OKXAI`.
-   - Text → Animation → In → "Fade".
+9. **Drag video-card-close.png** last, 10 seconds. Place **vo5.mp3** under it.
+   - The card already carries the title, URL and #OKXAI — nothing to add. Optional: Animation → In → "Fade".
 
 ### Polish (5 minutes)
 10. **Music**: CapCut top menu → **Audio → Music → search "minimal tech ambient"** → pick something calm → drag it to a second audio track spanning the whole video → select it → **Volume → -25dB** (it must whisper, not compete).
