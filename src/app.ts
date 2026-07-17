@@ -199,6 +199,23 @@ export function createApp(opts: AppOptions): Express {
   };
 
   // Everything after the payment gate: probe card, Accept normalization, quota.
+  const serviceCard = () => ({
+    ok: true,
+    service: "plotline",
+    description:
+      "Turn any CSV into a cinematic, scroll-animated data story where every claim is independently reproducible and cryptographically verifiable.",
+    type: "A2MCP",
+    transport: "MCP Streamable HTTP (JSON-RPC 2.0 over POST)",
+    tools: ["create_story", "analyze_csv", "verify_story", "get_story", "list_themes", "get_pricing"],
+    usage: "POST JSON-RPC to this endpoint: initialize → tools/list → tools/call",
+    example: { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} },
+    landing: BASE_URL,
+    docs: `${BASE_URL}/llms.txt`,
+    pricing: `${BASE_URL}/x402/info`,
+    health: `${BASE_URL}/api/health`,
+    proofKey: `${BASE_URL}/api/proof-key`,
+  });
+
   const proceed = (req: Request, res: Response, next: NextFunction): void => {
     const body = req.body as unknown;
     const isBatch = Array.isArray(body) && body.length > 0;
@@ -208,22 +225,7 @@ export function createApp(opts: AppOptions): Express {
 
     // Bare probe / non-JSON-RPC POST: return the result directly (HTTP 200).
     if (!isJsonRpc) {
-      res.status(200).json({
-        ok: true,
-        service: "plotline",
-        description:
-          "Turn any CSV into a cinematic, scroll-animated data story where every claim is independently reproducible and cryptographically verifiable.",
-        type: "A2MCP",
-        transport: "MCP Streamable HTTP (JSON-RPC 2.0 over POST)",
-        tools: ["create_story", "analyze_csv", "verify_story", "get_story", "list_themes", "get_pricing"],
-        usage: "POST JSON-RPC to this endpoint: initialize → tools/list → tools/call",
-        example: { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} },
-        landing: BASE_URL,
-        docs: `${BASE_URL}/llms.txt`,
-        pricing: `${BASE_URL}/x402/info`,
-        health: `${BASE_URL}/api/health`,
-        proofKey: `${BASE_URL}/api/proof-key`,
-      });
+      res.status(200).json(serviceCard());
       return;
     }
 
@@ -287,7 +289,18 @@ export function createApp(opts: AppOptions): Express {
       id: null,
     });
   };
-  app.get("/mcp", methodNotAllowed);
+  // Marketplace validators (e.g. the task flow's x402 endpoint check) probe
+  // /mcp with GET: answer exactly like a bare POST probe — the 402 challenge
+  // in paid mode, the service card in free mode. Never 405. (Express serves
+  // HEAD through this GET route automatically.)
+  app.get("/mcp", (_req, res) => {
+    res.setHeader("X-Payment-Mode", x402cfg.mode);
+    if (x402cfg.mode === "challenge") {
+      send402(res, buildChallenge(x402cfg, "/mcp"));
+      return;
+    }
+    res.status(200).json(serviceCard());
+  });
   app.delete("/mcp", methodNotAllowed);
 
   // ── Fallbacks ────────────────────────────────────────────────────────────

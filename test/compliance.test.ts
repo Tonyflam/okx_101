@@ -148,10 +148,21 @@ test("MCP tools/list and tools/call create_story work end-to-end", async () => {
   assert.ok(result.structuredContent.factCount >= 2);
 });
 
-test("GET /mcp returns 405 with JSON-RPC error", async () => {
+test("GET /mcp free mode: 200 service card (marketplace endpoint validators probe with GET)", async () => {
   const base = await listen("free");
   const res = await fetch(`${base}/mcp`);
-  assert.equal(res.status, 405);
+  assert.equal(res.status, 200);
+  const card = (await res.json()) as { ok: boolean; service: string; type: string };
+  assert.equal(card.ok, true);
+  assert.equal(card.service, "plotline");
+  assert.equal(card.type, "A2MCP");
+});
+
+test("GET /mcp paid mode: 402 + PAYMENT-REQUIRED challenge", async () => {
+  const base = await listen("challenge");
+  const res = await fetch(`${base}/mcp`);
+  assert.equal(res.status, 402);
+  assert.ok(res.headers.get("payment-required"));
 });
 
 // ── REST guard behavior per mode ───────────────────────────────────────────
