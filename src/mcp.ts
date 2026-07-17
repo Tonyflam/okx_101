@@ -190,7 +190,8 @@ export function createMcpServer(deps: McpDeps): McpServer {
       title: "Fetch an existing story",
       description: "Look up a previously created Plotline story by its ID and return its URL and metadata.",
       inputSchema: {
-        story_id: z.string().min(4).max(24).describe("The story ID returned by create_story."),
+        story_id: z.string().min(4).max(24).optional().describe("The story ID returned by create_story."),
+        storyId: z.string().min(4).max(24).optional().describe("Alias for story_id — either works."),
       },
       outputSchema: {
         found: z.boolean(),
@@ -203,10 +204,17 @@ export function createMcpServer(deps: McpDeps): McpServer {
       },
     },
     async (args) => {
-      const spec = deps.store.getSpec(args.story_id.trim());
+      const id = (args.story_id ?? args.storyId)?.trim();
+      if (!id) {
+        return {
+          content: [{ type: "text", text: "Provide story_id (the ID returned by create_story)." }],
+          structuredContent: { found: false },
+        };
+      }
+      const spec = deps.store.getSpec(id);
       if (!spec) {
         return {
-          content: [{ type: "text", text: `No story found with id \`${args.story_id.trim()}\`.` }],
+          content: [{ type: "text", text: `No story found with id \`${id}\`.` }],
           structuredContent: { found: false },
         };
       }
@@ -235,6 +243,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       inputSchema: {
         csv: z.string().min(1).describe("The original raw CSV the story claims to be built from."),
         story_id: z.string().min(4).max(24).optional().describe("ID of a story on this server."),
+        storyId: z.string().min(4).max(24).optional().describe("Alias for story_id — either works."),
         spec_json: z.string().optional().describe("Alternatively: a full StorySpec JSON (e.g. the downloaded /story/{id}.json)."),
       },
       outputSchema: {
@@ -249,9 +258,10 @@ export function createMcpServer(deps: McpDeps): McpServer {
     async (args) => {
       try {
         let spec: StorySpec | null = null;
-        if (args.story_id) {
-          spec = deps.store.getSpec(args.story_id.trim());
-          if (!spec) throw new UserError(`No story found with id \`${args.story_id.trim()}\`.`);
+        const id = (args.story_id ?? args.storyId)?.trim();
+        if (id) {
+          spec = deps.store.getSpec(id);
+          if (!spec) throw new UserError(`No story found with id \`${id}\`.`);
         } else if (args.spec_json) {
           try {
             spec = JSON.parse(args.spec_json) as StorySpec;
